@@ -173,21 +173,21 @@ class SilamHybrid: # Nothing to inherit from SilamVertical
 
 
     def num_levels(self):
-        return len(a_half) - 1 
+        return len(self.a_half) - 1 
 
     def unit(self):
         return self.__class__.unit
 
     def values(self):
-        return tuple([ (a_half[i] + a_half[i+1])*0.5 + (b_half[i] + b_half[i+1])*0.5*101325
+        return tuple([ (self.a_half[i] + self.a_half[i+1])*0.5 + (self.b_half[i] + self.b_half[i+1])*0.5*101325
                        for i in range(self.number_of_levels())])
 
     def thickness(self):
-        return tuple([ (a_half[i] - a_half[i+1]) + (b_half[i] - b_half[i+1])*101325
+        return tuple([ (self.a_half[i] - self.a_half[i+1]) + (self.b_half[i] - self.b_half[i+1])*101325
                        for i in range(self.number_of_levels())])
 
     def boundaries(self):
-        return tuple([ _half[i] + b_half[i]*101325 for i in range(self.number_of_levels()+1)])
+        return tuple([ self.a_half[i] + self.b_half[i]*101325 for i in range(self.number_of_levels()+1)])
 
     def midpoints(self):
         return self.values
@@ -667,7 +667,8 @@ class SilamNCFile(BaseSilamfile):
 #                      or isinstance(fldval, np.dtype))
                 # take all float, int or character attributes.
                 if not (isinstance(fldval, str) or isinstance(fldval, float) or isinstance(fldval, int)
-                        or isinstance(fldval, np.dtype)):
+                        or isinstance(fldval, np.dtype) or isinstance(fldval, np.float32)
+                        or isinstance(fldval, np.float64)):
                     continue
                 attr[var_name][fldname] = fldval
 #                print(3, var_name, fldname, fldval)
@@ -711,15 +712,18 @@ class SilamNCFile(BaseSilamfile):
         try:  # if fill_value is explicit
 #            print('silamNCfile: Trying explicit fill value')
 #            print(self._attrs[variable])
-            return self._attrs[variable]._FillValue
+            return self._attrs[variable]['_FillValue']
         except:  # have to use default
-            try:
-                print('silamNCfile: No explicit fill value, trying NetCDF default')
-#                print('Available attributes are: ', self._attrs[variable])
-                return netcdf.default_fillvals[{np.dtype('float32'):'f4',
-                                                np.dtype('float64'):'f8'}[self._attrs[variable]['dtype']]]
+            try: 
+                return self._attrs[variable]._FillValue
             except:
-                print('silamNCfile: Failed to find any fill value, do nothing and hope for the best')
+                try:
+                    print('silamNCfile: No explicit fill value, trying NetCDF default')
+    #                print('Available attributes are: ', self._attrs[variable])
+                    return netcdf.default_fillvals[{np.dtype('float32'):'f4',
+                                                    np.dtype('float64'):'f8'}[self._attrs[variable]['dtype']]]
+                except:
+                    print('silamNCfile: Failed to find any fill value, do nothing and hope for the best')
                 
 
 #############################################################################

@@ -41,11 +41,56 @@ except:
         chMPI = ''
         comm = None
 
+###########################################################################
 
 one_day = dt.timedelta(days=1)
 one_hour = dt.timedelta(hours=1)
 one_minute = dt.timedelta(minutes=1)
 zero_interval = dt.timedelta(hours=0)
+
+radians_2_degrees =  57.29577951
+degrees_2_radians =  0.01745329252
+
+
+################################################################# 
+
+def solar_zenith_angle(lon_deg, lat_deg, julian_day, hour, minutes):
+    #
+    # Computes the solar zenith angle from basic parameters and UTC time.
+    # To account for the local time, we use longitude
+    #
+    # Declination of the sun
+    #
+    d = 23.45 * np.pi / 180. * np.sin(2. * np.pi * (284. + julian_day) / 365.)
+    #
+    # Equation of time in minutes
+    # http://solardat.uoregon.edu/SolarRadiationBasics.html
+    #
+    Eqt = np.where(julian_day < 106,
+                   -14.2 * np.sin(np.pi * (julian_day + 7.) / 111.),
+                   np.where(julian_day < 166,
+                            4.0 * np.sin(np.pi * (julian_day - 106.) / 59.),
+                            np.where(julian_day < 246,
+                                     -6.5 * np.sin(np.pi * (julian_day - 166.) / 80.),
+                                     16.4 * np.sin(np.pi * (julian_day - 247.) / 113.))))
+    #
+    # Solar time in hours. Longsm -s the longitude of the "standard meridian" for the given time zone,
+    # while longLocal is the actual longitude needed. The differrence is then less than 1 hour.
+    # If we count from Greenwich, Longsm=0, of course
+    #
+    Tsolar = hour + (minutes+Eqt) / 60. + lon_deg / 15.
+    #
+    # Hour angle is:
+    #
+    w = np.pi * (12. - Tsolar) / 12.  # in radians
+    #
+    # Cosine of zenith angle
+    #
+    return np.arccos(np.sin(lat_deg * degrees_2_radians) * np.sin(d) + 
+                   np.cos(lat_deg * degrees_2_radians) * np.cos(d) * np.cos(w)) * radians_2_degrees
+
+
+#########################################################################################
 
 # Write a text message to the log file and print it to the screen
 # Need a class encapsulating the log file and making it pickle-compatible
@@ -533,15 +578,26 @@ def exp_LS(coefs, *pars):
     #
     scale, rate, shift_x, shift_y = coefs
     x, y, a, b, ifPrint = pars
-    yPred = shift_y + scale * np.exp(rate / (np.nanmax(x) - np.nanmin(x)) * (x - shift_x))
-    if ifPrint:
+    try:
+        yPred = shift_y + scale * np.exp(rate / (np.nanmax(x) - np.nanmin(x)) * (x - shift_x))
+        ifPrintLocal = False
+    except:
+        print('Warning: problem with supplementary.exp_LS')
+        print('coefs:', coefs, 'np.nanmax(x)', np.nanmax(x), 'np.nanmin(x)', np.nanmin(x), 
+              '\nx ', x, '\ny', y)
+        ifPrintLocal = True
+        yPred = np.ones(shape=x.shape, dtype=np.float32) * shift_y
+        idxOK = rate / (np.nanmax(x) - np.nanmin(x)) * (x - shift_x) > -20
+        yPred[idxOK] = shift_y + scale * np.exp(rate / (np.nanmax(x[idxOK]) - np.nanmin(x[idxOK])) *
+                                                (x[idxOK] - shift_x))
+    if ifPrint or ifPrintLocal:
         print(coefs, np.sum(np.square(y-yPred)))
         fig, ax = plt.subplots(1,1, figsize=(6,7))
         chart = ax.scatter(x, y, marker='.', label='y')
         chart2 = ax.scatter(x, yPred, marker='o', label='fit')
         ax.set_title('%g ' % np.sum(np.square(y-yPred)) + str(coefs))
         ax.legend()
-        plt.savefig('d:\\tmp\\sig\\sigmoid_' + str(time.time()) + '.png')
+        plt.savefig('sigmoid_' + str(time.time()) + '.png')
         plt.clf()
         plt.close()
 #    return np.sum(np.square(y - yPred) / (a + b * y))
@@ -624,19 +680,19 @@ def shift_arr(arr, num, fill_value=np.nan):
 
 #====================================================================================
 
-def MPI_join(chJoinID, tmpDir, ifPatience=False):
+def MPI_join(chJoinID, tmpDir, wait_max = one_hour * 24):
     #
     # If MPI is hand-made on puhti, have to implement joining manually,
     # Each process creates a directory with chJoinID, and mpi rank
     # process zero here checks these directories. When all are at place, deletes them
     # all, which is a sign for non-zero MPI processes to continue
-    # ifPatience controls how long the synchronization can wait: indefinitely if True and
-    # 2000 seconds if False (pretty long anyway)
+    # wait_max controls how long the synchronization can wait
     #
     if mpisize == 1: return
+    tEndWait = dt.datetime.now() + wait_max
     # valid communicator?
     if comm is None:          # puhti case
-        print('MANUAL BARRIER')
+        print('MANUAL BARRIER mpi %03i' % mpirank)
         # Announce your presence
         path2check = os.path.join(tmpDir,'%s_%03i' % (chJoinID, mpirank))
         try: os.makedirs(path2check)
@@ -648,26 +704,30 @@ def MPI_join(chJoinID, tmpDir, ifPatience=False):
                 path2check = os.path.join(tmpDir, '%s_%03i' % (chJoinID,iP))
                 cnt = 0
                 while not os.path.exists(path2check):
-                    print('000 is waiting for MPI %i' % iP)
-                    if ifPatience: time.sleep(100)
-                    else: time.sleep(10)
+                    if cnt > 10: 
+                        print('000 is waiting for MPI %03i' % iP, dt.datetime.now())
+                        cnt = 0
+                    time.sleep(10)
                     cnt += 1
-                    if not ifPatience: 
-                        if cnt > 200: raise ValueError
+                    if dt.datetime.now() > tEndWait: 
+                        raise ValueError(('MPI_%03i is waiting too long, ' % mpirank) + 
+                                         dt.datetime.now().strftime('%Y %m %d %H %M'))
             # All directories are at place. Now delete all directories
             for iP in range(mpisize):
                 path2check = os.path.join(tmpDir,'%s_%03i' % (chJoinID, iP))
                 os.removedirs(path2check)
         else:
-            # wait until town directory is deleted
+            # wait until own directory is deleted
             cnt = 0
             while os.path.exists(path2check):
-                print('mpi %03i is waiting' % mpirank, dt.datetime.now())
-                if ifPatience: time.sleep(100)
-                else: time.sleep(10)
+                if cnt > 10: 
+                    print('mpi %03i is waiting' % mpirank, dt.datetime.now())
+                    cnt = 0
+                time.sleep(10)
                 cnt += 1
-                if not ifPatience: 
-                    if cnt > 200: raise ValueError
+                if dt.datetime.now() > tEndWait: 
+                    raise ValueError(('MPI_%03i is waiting too long, ' % mpirank) + 
+                                     dt.datetime.now().strftime('%Y %m %d %H %M'))
     else:
         # communicator exists. Make a barrier
         print('BARRIER')
@@ -684,23 +744,18 @@ def ensure_directory_MPI(chDir, ifPatience=False):
     # In MPI, only mpirank 0 is allowed to create teh directory. Others must wait
     #
     cnt = 0
-    while not os.path.exists(chDir): 
-        if mpirank == 0: 
-            os.makedirs(chDir)
-        else: 
-            if cnt > 1:
-                try: os.makedirs(chDir)
-                except: pass
-            if ifPatience: time.sleep(mpirank * 2)
-            else: time.sleep(mpirank)
-            cnt += 1
+    while not os.path.exists(chDir):
+        try: os.makedirs(chDir)
+        except: pass
+        if cnt > 0:
+            time.sleep(5)
             if cnt > 100: 
                 if ifPatience:
                     print('Waiting for the directory ' + chDir)
                     cnt = 0   # restart waiting
-                else:
-                    print('Failed to create directoory: ' + chDir)
-                    raise ValueError
+                    if cnt > 1000: raise ValueError('Failed to create directoory 1: ' + chDir)
+                else: raise ValueError('Failed to create directoory 2: ' + chDir)
+        cnt += 1
 
 
 ######################################################################################

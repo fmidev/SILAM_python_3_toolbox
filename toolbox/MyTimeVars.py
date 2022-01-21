@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 my_description="""
     Handles timeseries for bunch of stsations, calculates and plots timevars
@@ -905,7 +905,10 @@ class TsMatrix:
         # The source file
         #
         ncfile = silamfile.SilamNCFile(inFieldNCFNm)
-        reader = ncfile.get_reader(variable, mask_mode=False)
+        if ncfile.vertical is None:
+            reader = ncfile.get_reader(variable, mask_mode=False)
+        else:
+            reader = ncfile.get_reader(variable, mask_mode=False, ind_level=0)
         #
         # Stations
         #
@@ -1335,48 +1338,63 @@ class TsMatrix:
         one_day = dt.timedelta(days=1)
         one_hour = dt.timedelta(hours=1)
         one_minute = dt.timedelta(minutes=1)
-        if chTargetAveraging.startswith('day'):
-            if tStep != one_hour:
-                print('For %s target averaging only hourly input allowed, not sStep=' % 
-                      chTargetAveraging, tStep)
-                raise ValueError
-            idxStart = 0
-            while(self.times[idxStart].hour != 0): idxStart += 1
-#            idxAvStart = max(0, int(np.ceil(idxStart/24.0)))
-            idxEnd = len(self.times)
-            while(self.times[idxEnd-1].hour != 23): idxEnd -= 1
-#            idxAvEnd = max(0, int(np.ceil((len(self.times) - idxEnd) / 24.0)))
-            # size of averaged array
-            nAvTimes = int((idxEnd - idxStart) / 24) #+ idxAvStart + idxAvEnd
-            #
-            # Averaged times. Note: the time tag is at the MIDDLE of the averaging interval,
-            # i.e. yr-mon-day 11:30 is the daily average for the day. This is to make it same
-            # CDO would make
-            #
-            avTimes = list(( self.times[idxStart] + 11 * one_hour + 30 * one_minute + 
-                             one_day * iDay for iDay in range(nAvTimes)))
-            if len(self.variables) == 1:
-                valsAv_shape = (nAvTimes, self.vals.shape[1])
-            else:
-                valsAv_shape = (self.vals.shape[0], nAvTimes, self.vals.shape[2])
-        else:
-            print('Can handle target averaging day<smth>, not', chTargetAveraging)
+
+        if tStep != one_hour:
+            print('For %s target averaging only hourly input allowed, not sStep=' % 
+                  chTargetAveraging, tStep)
             raise ValueError
+        idxStart = 0
+        while(self.times[idxStart].hour != 0): idxStart += 1
+#        idxAvStart = max(0, int(np.ceil(idxStart/24.0)))
+        idxEnd = len(self.times)
+        while(self.times[idxEnd-1].hour != 23): idxEnd -= 1
+#        idxAvEnd = max(0, int(np.ceil((len(self.times) - idxEnd) / 24.0)))
+        # size of averaged array
+        nDays = (idxEnd - idxStart) // 24  #+ idxAvStart + idxAvEnd
+        #
+        # Averaged times. Note: the time tag is at the MIDDLE of the averaging interval,
+        # i.e. yr-mon-day 11:30 is the daily average for the day. This is to make it same
+        # CDO would make
+        #
+        
+        avTime0 = self.times[idxStart]  + 11 * one_hour + 30 * one_minute 
+        avTimes = [ avTime0 + one_day * i for i in range(nDays) ] 
+
+        if len(self.variables) == 1:
+            nhr, nst = self.vals.shape
+            valsAv_shape = (nDays, nst)
+            shapex = (nDays,24, nst)
+            avax = 1
+        else:
+            nvars, nhr, nst =  self.vals.shape
+            valsAv_shape = (nvars, nDays, nst)
+            shapex = ( nvars, nDays, 24, nst)
+            avax = 2
+
         #
         # Do the required averaging
         #
         if chTargetAveraging == 'daymean':
             # From hourly to daily mean
-            valsAv = self.vals[idxStart:idxEnd].reshape(-1,24).mean(axis=-1).reshape(valsAv_shape)
+            valsAv = np.nanmean(self.vals[idxStart:idxEnd].reshape(shapex),   axis=avax).reshape(valsAv_shape)
         elif chTargetAveraging == 'daymin':
             # From hourly to daily min
-            valsAv = self.vals[idxStart:idxEnd].reshape(-1,24).min(axis=-1).reshape(valsAv_shape)
+            valsAv = np.nanmin(self.vals[idxStart:idxEnd].reshape(shapex), axis=avax).reshape(valsAv_shape)
         elif chTargetAveraging == 'daymax':
             # From hourly to daily max
-            valsAv = self.vals[idxStart:idxEnd].reshape(-1,24).max(axis=-1).reshape(valsAv_shape)
+            valsAv = np.nanmax(self.vals[idxStart:idxEnd].reshape(shapex), axis=avax).reshape(valsAv_shape)
         elif chTargetAveraging == 'daysum':
             # From hourly to daily sum
-            valsAv = self.vals[idxStart:idxEnd].reshape(-1,24).sum(axis=-1).reshape(valsAv_shape)
+            valsAv = self.vals[idxStart:idxEnd].reshape(shapex).sum(axis=avax).reshape(valsAv_shape)   ### NaNs make day NaN
+        elif chTargetAveraging == 'MDA8': # Daily max of 8-hour mean
+            import bottleneck as bn
+            arr = bn.move_mean(self.vals, window=8, axis=(avax-1), min_count=1)  ## over time
+            valsAv = arr[idxStart:idxEnd].reshape(shapex).max(axis=avax).reshape(valsAv_shape)
+        elif chTargetAveraging == 'M817':  ## Mean of 8-17 
+            if avax == 1:
+                valsAv = np.nanmean( self.vals[idxStart:idxEnd].reshape(shapex)[:,8:17,:], axis=avax).reshape(valsAv_shape)
+            else:
+                valsAv = np.nanmean( self.vals[idxStart:idxEnd].reshape(shapex)[:,:,8:17,:], axis=avax).reshape(valsAv_shape)
         else:
             print('Unknown target averagind type:', chTargetAveraging)
             raise ValueError
@@ -1460,3 +1478,93 @@ class TsMatrix:
                              self.vals[:,:,arStatInGrid], self.units, self.fill_value, self.timezone))
 
 
+    #============================================================================
+    
+    @classmethod
+    def verify(self, chFNmIn, log):
+        #
+        # Verifies the given tsMatrix, either self or taking it from the file. 
+        # Does not generate errors, only reports the content of the matrix, and returns 
+        # the number of nan-s
+        # The report is written to the log file if it is provided. Printed otherwise
+        #
+        if chFNmIn is None:
+            nNan = np.sum(np.isnan(self.vals))
+            nFinite = np.sum(np.isfinite(self.vals))
+            vMin = np.nanmin(self.vals)
+            vMean = np.nanmean(self.vals)
+            vMax = np.nanmax(self.vals)
+            vMed = np.nanmedian(self.vals)
+            if len(self.variables) == 1:
+                ifDimsOK = (self.times.size == self.vals.shape[0] and 
+                            len(self.stations) == self.vals.shape[1] and
+                            len(self.vals.shape) == 2)
+            else:  
+                ifDimsOK = (self.times.size == self.vals.shape[1] and 
+                            len(self.stations) == self.vals.shape[2] and
+                            len(self.variables) == self.vals.shape[0] and
+                            len(self.vals.shape) == 3)
+            if ifDimsOK: chDimsOK = 'dims_OK'
+            else: chDimsOK = '###>>_problematic_dimensions'
+            if nFinite == self.vals.size and np.all(np.isfinite([vMin,vMean,vMax,vMed])):
+                chValsOK = 'vals_OK'
+            else: chValsOK = '###>>_suspicious_vals'
+             
+            if log is None:
+                print('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+                      (chDimsOK, chValsOK, self.times.size, len(self.stations), len(self.variables),
+                       str(self.vals.shape), ' '.join(self.units)) +
+                      ' fill_value=%g timezone=%s' % (self.fill_value, self.timezone) +
+                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
+                      (nNan, nFinite, self.vals.size - nFinite - nNan, 
+                       np.nanmin(self.vals), np.nanmean(self.vals), np.nanmax(self.vals), np.nanmedian(self.vals)))
+            else:
+                log.log('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+                      (chDimsOK, chValsOK, self.times.size, len(self.stations), len(self.variables),
+                       str(self.vals.shape), ' '.join(self.units)) +
+                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
+                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
+                      (nNan, nFinite, self.vals.size - nFinite - nNan, 
+                       np.nanmin(self.vals), np.nanmean(self.vals), np.nanmax(self.vals), np.nanmedian(self.vals)))
+        else:
+            tsM = TsMatrix.fromNC(chFNmIn)
+            nNan = np.sum(np.isnan(tsM.vals))
+            nFinite = np.sum(np.isfinite(tsM.vals))
+            vMin = np.nanmin(tsM.vals)
+            vMean = np.nanmean(tsM.vals)
+            vMax = np.nanmax(tsM.vals)
+            vMed = np.nanmedian(tsM.vals)
+            if nFinite == tsM.vals.size and np.all(np.isfinite([vMin,vMean,vMax,vMed])): 
+                chValsOK = 'vals_OK'
+            else: chValsOK = '###>>_suspicious_vals'
+            if len(tsM.variables) == 1:
+                ifDimsOK = (tsM.times.size == tsM.vals.shape[0] and 
+                            len(tsM.stations) == tsM.vals.shape[1] and
+                            len(tsM.vals.shape) == 2)
+            else:  
+                ifDimsOK = (tsM.times.size == tsM.vals.shape[1] and 
+                            len(tsM.stations) == tsM.vals.shape[2] and
+                            len(tsM.variables) == tsM.vals.shape[0] and
+                            len(tsM.vals.shape) == 3)
+            if ifDimsOK: chDimsOK = 'dims_OK'
+            else: chDimsOK = '###>>_problematic_dimensions'
+            if log is None:
+                print('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+                      (chDimsOK, chValsOK, tsM.times.size, len(tsM.stations), len(tsM.variables),
+                       str(tsM.vals.shape), ' '.join(tsM.units)) +
+                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
+                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
+                      (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
+                       np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals)))
+            else:
+                log.log('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+                      (chDimsOK, chValsOK, tsM.times.size, len(tsM.stations), len(tsM.variables),
+                       str(tsM.vals.shape), ' '.join(tsM.units)) +
+                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
+                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g file=%s' % 
+                      (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
+                       np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals), chFNmIn))
+        return ifDimsOK and chValsOK == 'vals_OK'
+            
+        
+        

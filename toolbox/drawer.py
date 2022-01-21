@@ -101,7 +101,7 @@ def bar_plot(ax, data, data_stdev=None, colors=None, total_width=0.8, single_wid
     if legend[0]:
         ax.legend(bars, data.keys(), loc=legend[1], fontsize=legend[2], bbox_to_anchor=legend[3])  #(1.05,1.0))
 
-    if group_names:
+    if not group_names is None:
         ax.set_xticks(range(len(group_names)))
         ax.set_xticklabels(group_names, fontsize=10, rotation=10)
 

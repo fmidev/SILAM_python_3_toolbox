@@ -1725,13 +1725,13 @@ class mapping_models:
         if self.iDebug > 0:
             print('All predictors, ranked:', predictors[idxPredictorsInformative])
             print('all_predictors_transformed:', pdata_pred_rdy.shape)
-            print('prep: pdata_pred_rdy', pdata_pred_rdy)
-            print(validPredictors)
+#            print('prep: pdata_pred_rdy', pdata_pred_rdy)
+            print('prep: valid predictors:', validPredictors)
             print('prep: indPredictorsOK',indPredictorsOK)
-            print('prep: train_predictorsTr',train_predictorsTr)
-            print('prep: test_predictorsTr',test_predictorsTr)
-            print('prep: train_obs', pdata_obs[train_idx,:])
-            print('prep: test_obs', pdata_obs[test_idx,:])
+#            print('prep: train_predictorsTr',train_predictorsTr)
+#            print('prep: test_predictorsTr',test_predictorsTr)
+#            print('prep: train_obs', pdata_obs[train_idx,:])
+#            print('prep: test_obs', pdata_obs[test_idx,:])
         #
         # Eliminate the nans from trining and tst datasets. For that, they have to be flattened
         # However, do not touch forecasting predictors
@@ -1847,10 +1847,22 @@ class mapping_models:
         # Project the intervals midpoints to the observed phase space, each predictor
         for iPred in range(nPredictors):
             #
+            # Stupidity check / warning
+            #
+            if (np.sum(pdata_predictors[iPred,:,:] > rulesPred.predictor_interv_edges[iPred,:][-1]) +
+                np.sum(pdata_predictors[iPred,:,:] < rulesPred.predictor_interv_edges[iPred,0])
+                ) > 0.1 * pdata_predictors[iPred,:,:].size:
+                self.log.log('Many values of %s are outside the range (%g - %g). Min/max: %g / %g' %
+                             (predictors[iPred], rulesPred.predictor_interv_edges[iPred,:][0], 
+                              rulesPred.predictor_interv_edges[iPred,:][-1],
+                              np.min(pdata_predictors[iPred,:,:]),
+                              np.max(pdata_predictors[iPred,:,:])))
+            #
             # A lookup table for projection of each predictor interval to output variable
             # get the indices of predictors that fall into the corresponding intervals
             # Note: searchsorted gives 0 only for exact array-minimum value(s), i.e. it 
             # belongs to the interval 0
+            #
             indices_4_ranges = np.minimum(np.maximum(np.searchsorted(rulesPred.predictor_interv_edges[iPred,:], 
                                                                      pdata_predictors[iPred,:,:]) - 1, 
                                                      0), self.nIntervals-1)
@@ -1864,7 +1876,10 @@ class mapping_models:
                 # Interpolate
                 v_i_1 = rulesPred.LUT_outvar_4_ranges[iPred, indRangePrev]
                 v_i = rulesPred.LUT_outvar_4_ranges[iPred, indices_4_ranges]
-                Pr = pdata_predictors[iPred,:,:]
+                Pr = np.maximum(np.minimum(pdata_predictors[iPred,:,:], 
+                                           rulesPred.predictor_interv_edges[iPred,:][-1]),
+                                rulesPred.predictor_interv_edges[iPred,:][0])
+#                Pr = pdata_predictors[iPred,:,:]
                 Pr_i = rulesPred.predictor_interv_edges[iPred,:][indices_4_ranges]
                 Pr_i_1 = rulesPred.predictor_interv_edges[iPred,:][indRangePrev]
     
@@ -1883,7 +1898,7 @@ class mapping_models:
                 predictors_transformed_all[iPred,:,:] = rulesPred.LUT_outvar_4_ranges[iPred, indices_4_ranges]
             #
             # Check for nan-s
-            if np.any(np.isnan(predictors_transformed_all[iPred,:,:])):
+            if not np.all(np.isfinite(predictors_transformed_all[iPred,:,:])):
                 for iTime in range(predictors_transformed_all.shape[1]):
                     if np.all(np.isfinite(predictors_transformed_all[iPred,iTime,:])): continue
                     self.log.log(timesPredictors[iTime].strftime('NaN in predictors for %Y-%m-%d %H:%M'))
@@ -1898,9 +1913,19 @@ class mapping_models:
         # Energy in projected predictors
         #
         self.log.log('Projected predictors: ' + ' '.join(predictors))
-        predEnergy = list((np.square(predictors_transformed_all[iP,:,:]).mean() 
-                           for iP in range(len(predictors))))
-        self.log.log('Projected predictor energy:' + ' '.join(list(('%g' % E for E in predEnergy))))
+        try:
+            predEnergy = list((np.square(predictors_transformed_all[iP,:,:]).mean() 
+                               for iP in range(len(predictors))))
+        except:
+            self.log.log('square overflow')
+            for iored, pred in enumerate(predictors):
+                self.log.log('\n%s: min=%g, max=%g, vals=%s' % 
+                             (pred, np.min(predictors_transformed_all[iP,:,:]),
+                              np.max(vpredictors_transformed_all[iP,:,:]),
+                              ' '.join(('%v' % v for v in predictors_transformed_all[iP,:,:]))))
+            predEnergy = list((np.square(predictors_transformed_all[iP,:,:]).mean() 
+                               for iP in range(len(predictors))))
+        self.log.log('Projected predictor energy: ' + ' '.join(list(('%g' % E for E in predEnergy))))
 
         #
         # Transformation 2
@@ -1923,8 +1948,8 @@ class mapping_models:
         self.log.log('Ordered predictors: ' + ' '.join(predictors[iP] for iP in rulesPred.pred_ranking))
         predEnergyRanked = list((np.square(pdata_predictors_ort[iP,:,:]).mean() 
                                  for iP in rulesPred.pred_ranking))
-        self.log.log('Ordered predictor energy:' + ' '.join(list(('%g' % E 
-                                                                  for E in predEnergyRanked))))
+        self.log.log('Ordered orthogonal predictor energy: ' + ' '.join(list(('%g' % E 
+                                                                              for E in predEnergyRanked))))
         #
         # Transformation 3
         # Report the informative predictors in the ordered array

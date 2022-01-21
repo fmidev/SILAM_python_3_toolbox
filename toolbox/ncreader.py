@@ -740,7 +740,7 @@ class NCDataset(gradsfile.GriddedDataReader):
             self.descr.timelist = list( (self.descr.first_time + n * self.descr.timestep 
                                          for n in range(self.descr.n_times)) )
             self.last_time = self.descr.timelist[-1]
-        self.rewind()  #sets        self._at_eof = False
+        self.rewind()
         try:
             self._switch_file(self.descr.first_time)
         except OSError: #, err:
@@ -768,7 +768,7 @@ class NCDataset(gradsfile.GriddedDataReader):
             self._ncfilename = new_file
 
     def rewind(self):
-        self.goto(self.descr.first_time)  #sets        self._at_eof = False
+        self.goto(self.descr.first_time)
         
     def _read_one_step(self):
         self._switch_file(self._time)
@@ -786,13 +786,12 @@ class NCDataset(gradsfile.GriddedDataReader):
     def read(self, n_times=1, squeeze=True):
         if self._at_eof:
             raise gradsfile.EndOfFileException()
-
         if n_times == 1:
             values = self._read_one_step()
         else:
-            if self._idx_time + n_times - 1 > len(self.descr.timelist):
+            if self._ind_time + n_times - 1 > len(self.descr.timelist):
                 raise gradsfile.EndOfFileException()
-            read_end_time = self.descr.timelist[self._idx_time + n_times - 1]
+            read_end_time = self.descr.timelist[self._ind_time + n_times - 1]
             shape_full = (len(self._x), len(self._y), len(self._z), n_times, 1)
             values = np.empty(shape_full)
             for ind_time in range(n_times):
@@ -802,11 +801,14 @@ class NCDataset(gradsfile.GriddedDataReader):
         return values
 
     def seek(self, n):
-        time_to = self._time + n*self.descr.timestep
-        if time_to > self.last_time:
-            self._at_eof = True
-        self._time = time_to
+        # Searches n steps from the current one
         self._ind_time += n
+        if self._ind_time < 0 or self._ind_time >= self.descr.n_times:
+            self._at_eof = True
+            self._time = None
+        else:
+            self._time = self.descr.timelist[self._ind_time]
+            self._at_eof = False
 
     def seek_abs(self, n):
         if n >= len(self.descr.timelist):
@@ -815,9 +817,9 @@ class NCDataset(gradsfile.GriddedDataReader):
         self._ind_time = n
         self._at_eof = False
 
-    def goto(self, time):
+    def goto(self, time):   # searches for time
         self._time = time
-        self._idx_time = np.searchsorted(self.descr.timelist, time)
+        self._ind_time = np.searchsorted(self.descr.timelist, time)
         self._at_eof = False
 
     def close(self):
