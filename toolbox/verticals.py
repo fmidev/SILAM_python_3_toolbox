@@ -3,7 +3,6 @@ def thickness(midpoints):
     thick = [2*midpoints[0]]
     lower = thick[0]
     for point in midpoints[1:]:
-        print(lower)
         thick.append(2*(point-lower))
         lower = lower + thick[-1]
     return thick

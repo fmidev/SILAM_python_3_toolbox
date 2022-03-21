@@ -18,7 +18,6 @@ class StationError(Exception):
 class Station:
     def __init__(self, code, name, lon, lat, height=0.0, area_type='', dominant_source='', ifVerbose=False):
 
-        if ifVerbose: print('Station x,y,name,code:', x,y,name,code)
         
         self.lon = float(lon)
         self.lat = float(lat)
@@ -28,9 +27,10 @@ class Station:
         self.source = dominant_source.lower()
         self.hgt = height
         self.ifVerbose = ifVerbose
+        if ifVerbose: print(self)
 
     def __str__(self):
-        return '%s %.2f %.2f %s' % (self.code, self.lon, self.lat, self.name.encode('utf-8'))
+        return '%s lo=%.2f la=%.2f %s' % (self.code, self.lon, self.lat, self.name.encode('utf-8'))
         
     def __hash__(self): 
         return self.code.__hash__()
@@ -55,7 +55,8 @@ class Station:
                                                      ('%s', self.name), 
                                                      ('%s', self.area),
                                                      ('%s', self.source))]
-        file.write(separator.join(fields).encode('utf-8') + '\n')
+#        file.write(separator.join(fields).encode('utf-8') + '\n'.encode('utf-8'))
+        file.write(separator.join(fields) + '\n')
 
     def inGrid(self, grid):
         # checks if the station is inside the given grid
@@ -115,13 +116,14 @@ def readStations(file, columns=None, separator=None, have_full=False):
         fh = file
         Fname = None
     except AttributeError:
+        Fname = file
         fh = codecs.open(file,'rb') #, encoding='utf-8')  #'latin-1')   #'utf-8')
     linenum = 0
 
 
     try:
         for l in fh:
-            print (l)
+#            print (l)
             linenum += 1
             try:
                 line=codecs.decode(l,"utf-8")
@@ -145,8 +147,8 @@ def readStations(file, columns=None, separator=None, have_full=False):
             else:
                 raise ValueError('Invalid station record: ' + line)
 
-    except err:
-        print('Parse error at %s:%i : %s' % (file, linenum, err.message))
+    except:
+        print('Parse error at %s:%i' % (file, linenum))
         raise
         #raise ValueError()
     if fh is not file:

@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import sys # Not needed normally
 import netCDF4 as nc4
-from toolbox import stations, gridtools
+from toolbox import stations as ST ## not to be confused with stations arrays
+from toolbox import gridtools
 from toolbox import silamfile
 import os
 import datetime as dt
@@ -26,8 +27,8 @@ try:
         VoimaBug=False
 except:
     VoimaBug=False
-from matplotlib import streamplot
-import string
+#from matplotlib import streamplot
+#import string
 
 
 class TimeVarData:
@@ -582,19 +583,25 @@ class TsMatrix:
                   np.any(sorted(stcodes) != stcodes),
                   np.any(sorted(variables) != variables))
             raise ValueError('Some dimensions are not sorted properly')
-        # dimensions?
-        if len(variables) == 1:  # just a single variable, 2D case
+
+        if len(vals.shape) == 2:  # just a single variable, 2D case
             (self.ntimes, self.nstations) = vals.shape
             if ((len(times),len(stations)) != vals.shape):
                 print((len(times),len(stations),len(variables)), "!=", vals.shape)
                 raise ValueError("TsMatrix got incompatibel-shape arrays")
-            self.dimension = 2
+            self.vals = vals
+            assert (len(variables) == 1)
         else:                         # must be a list or numpy array. 3D case
             (self.nvariables, self.ntimes, self.nstations) = vals.shape
             if ((len(variables),len(times),len(stations)) != vals.shape):
                 print(len(variables),(len(times),len(stations)), "!=", vals.shape)
                 raise ValueError("TsMatrix got incompatibel-shape arrays")
-            self.dimension = 3
+            if (self.nvariables == 1):
+                self.vals = vals[0,:,:]  ## make 2d array 
+            else:
+                self.vals = vals
+
+
         if len(units) != len(variables):
             print('Variables:',variables)
             print('Units:',units)
@@ -602,30 +609,44 @@ class TsMatrix:
             raise ValueError("len(units) != len(variables)")
         self.times = times
         self.stations = stations
-        self.variables = variables
-        self.vals = vals
-        self.units = units
+        self.variables = np.array(variables)
+        self.units = np.array(units)
         self.fill_value = fill_value
         self.timezone = timezone
 
+    #==========================================================================
+    def to_dataframe(self, var=None, copy=None):
+        #
+        # Converts given variable of tsmatrix to dataframe with station codes 
+        # as column headers 
+        #
+        import pandas as pd
+
+        columns = [ st.code for st in self.stations ]
+        if  len(self.vals.shape) == 2 and (var is None or var == self.variables[0]):
+            return pd.DataFrame(data=self.vals, index=self.times, columns=columns, copy=copy)
+        else:
+            ivar = np.where(self.variables == var)[0][0]
+            return pd.DataFrame(data=self.vals[ivar,:,:], index=self.times, columns=columns, copy=copy)
 
     #==========================================================================
+
     def to_nc(self, filename):
         #
         # Stores the tsMatrix object to the nc file
         #
         # dimensions
-        if self.dimension == 3:
+        if  len(self.vals.shape) == 3:
             nvar,nt,nst = len(self.variables), len(self.times), len(self.stations)
         else:
             nt,nst = len(self.times), len(self.stations)
-            nvar = 0
+            
         # start time #some versions of ncdump have issues parsing minutes in reftime...
         refdate=self.times[0].date()
         reftime=dt.datetime(refdate.year, refdate.month, refdate.day)
 
         tmpfilename = "%s.%s.pid%08d"%(filename, socket.gethostname(), os.getpid())
-        
+
 
         with nc4.Dataset(tmpfilename , "w", format="NETCDF4") as outf:
 
@@ -636,7 +657,7 @@ class TsMatrix:
             time = outf.createDimension("time", None)
             slen = outf.createDimension("name_strlen", strlen)
             station = outf.createDimension("station",nst)
-            if self.dimension == 3:
+            if len(self.vals.shape) == 3:
                 variable = outf.createDimension("variable",nvar)
                 valdims = ("variable","time","station")
             else:
@@ -671,19 +692,16 @@ class TsMatrix:
             alt.positive = "up";
             alt.axis = "Z";
             
-            if self.dimension == 3:
+            if len(self.vals.shape) == 3:
                 # variables
-                v = outf.createVariable("variable","c",("variable",), zlib=True, complevel=4)
-                v.standard_name = "variable"
-                v.long_name = "variable"
-                v.units = ""
+                v = outf.createVariable("variable","c",("variable",'name_strlen'), zlib=True, complevel=4)
+                v.long_name = "variable name"
                 # units - the size of variables
-                u = outf.createVariable("unit","c",("variable",), zlib=True, complevel=4)
-                u.standard_name = "unit"
+                u = outf.createVariable("unit","c",("variable",'name_strlen'), zlib=True, complevel=4)
                 u.long_name = "variable unit"
-                u.units = ""
-                for iq in range(len(self.quantities)):
-                    u[:] = nc4.stringtoarr( self.units[iq], strlen, dtype='S')
+                for iq in range(len(self.variables)):
+                    v[iq,:] = nc4.stringtoarr( self.variables[iq], strlen, dtype='S')
+                    u[iq,:] = nc4.stringtoarr( self.units[iq], strlen, dtype='S')
 
             # stations
             stcode = outf.createVariable("station_code","c",("station","name_strlen"), 
@@ -704,17 +722,16 @@ class TsMatrix:
             val= outf.createVariable("val","f4", valdims, 
                                      fill_value = self.fill_value, zlib=True, complevel=4)
             val.coordinates = "lat lon alt station_code"
-            if self.dimension == 3:
+            if len(self.vals.shape) == 3:
                 val.units = ''
             else:
                 val.units = self.units
                 try: 
                     val.long_name = self.variables[0]  # this is vairable name, e.g. cnc_O3_gas
-                    val.standard_name = self.variables[0]  # this is vairable name, e.g. cnc_O3_gas
+                    # FIXME  This is ny no means standard_name, and should not be used this way 
+                    val.standard_name = self.variables[0]  # this is vairable name, e.g. cnc_O3_gas##
                 except: pass
 
-            ## .01 absolute precision
-            ###outdat = np.around(self.vals,  decimals=2)
             outdat = self.vals
             
             charTmp = np.zeros(shape=(len(self.stations), strlen), dtype='S1')
@@ -727,15 +744,11 @@ class TsMatrix:
             lat[:] = list( (st.lat for st in self.stations))
             alt[:] = list( (st.hgt for st in self.stations))
 
-            precision=500 ##Relative precision
-            keepbits=np.int(np.ceil(np.log2(precision)))
-            maskbits=20 -keepbits
-            mask=(0xFFFFFFFF >> maskbits)<<maskbits
-            b=outdat.view(dtype=np.int32)
-            b &= mask
             
             # main dataset: replace nan with own fill_value
-            val[:] = np.where(np.isfinite(outdat), outdat, self.fill_value)
+            outdat[np.isnan(outdat)] = self.fill_value
+            val[:] = outdat
+
         # Rename the temporary file. On Windows, unlike Unix, os.rename cannot replace existing file
         # but replace does, albeit it is not an atomic operation there (in Unix it should be atomic)
         os.replace(tmpfilename, filename)  
@@ -755,24 +768,24 @@ class TsMatrix:
         else: variables2read = None
          
         with nc4.Dataset(ncfile) as nc:
+            nc.set_auto_maskandscale(False) ## Never mask, never scale
             # Do we have the "variable" dimension?
-            if 'variable' in nc.variables.keys():
-                ifMultiVar = True
-                variables = nc4.chartostring(nc.variables['variable'][:])  # array of variables / quantities
+            ifMultiVar = ('variable' in nc.variables.keys())
+            if ifMultiVar:
+                variables = nc4.chartostring(nc.variables['variable'][:])  # array of  names for timeseries variables
                 if variables2read:
                     idxVar = np.searchsorted(variables, variables2read, sorter=np.argsort(variables))
                     if np.any(idxVar == len(variables)): # some variable does not exist in the file
                         for ivar in range(len(variables)):
                             if idxVar[ivar] == len(variables):
                                 print('Requested variable does not exist: ', variables2read[ivar])
-                    raise
+                    raise ValueError("Variable Not Found in the file")
                 else:
-                    idxVar = range(len(variables))
+                    idxVar = slice(None,None,None)
                 units = nc4.chartostring(nc.variables['unit'][:])
             else:
-                ifMultiVar = False
                 try:
-                    variables = [nc.variables['val'].standard_name]  # just a string but make a list
+                    variables = [nc.variables['val'].long_name]  # just a string but make a list
                 except: variables = ['']   # for old tsMatrices
                 try:
                     units = [nc.variables['val'].units]
@@ -788,7 +801,7 @@ class TsMatrix:
             # Get stations
             stlist = nc4.chartostring(nc.variables['station_code'][:])
             if stations2read is None:     # need indices of stations to get?
-                idxStat = range(len(stlist))
+                idxStat = slice(None,None,None)
             else:
                 idxStat = np.searchsorted(stlist, stations2read, sorter=np.argsort(stlist))
                 if np.any(idxStat == len(stlist)):
@@ -805,62 +818,32 @@ class TsMatrix:
             stz = nc.variables['alt'][idxStat]
 
             obsStations = []
-            for i in range(len(idxStat)):
-                obsStations.append(stations.Station(stcodes[i], stnames[i], stx[i], sty[i], 
+            for i in range(len(stnames)):
+                obsStations.append(ST.Station(stcodes[i], stnames[i], stx[i], sty[i], 
                                                     height=stz[i], area_type=stareas[i], 
                                                     dominant_source=stsources[i]))
-            #
-            # Reading vals can be a long task, so all cuts are implemented separately
-            # Selection can speed-up things very significantly, so allow separate legs too
-            #
+
+            ##
+            ## Time slice
+            itstart = None
+            itend = None
+            hrlistFull = netcdftime.num2date(tvals,tunits)
+            if tStart: 
+                itstart = np.searchsorted(hrlistFull, tStart)
+            if tEnd:
+                itend = np.searchsorted(hrlistFull, tEnd, side='right')
+            selection_time = slice(itstart, itend, 1)
+            hrlist = hrlistFull[selection_time]
+
             if ifMultiVar:
-                #
-                # Three axes with possible selections 
-                #
-                if tStart or tEnd:
-                    hrlistFull = netcdftime.num2date(tvals,tunits)
-                    if tStart: tStart_ = tStart
-                    else: tStart_ = hrlistFull[0]
-                    if tEnd: tEnd_ = tEnd
-                    else: tEnd_ = hrlistFull[-1]
-                    selection_time = np.logical_and(np.logical_not(hrlistFull < tStart_), 
-                                                    np.logical_not(hrlistFull > tEnd_))
-                    hrlist = hrlistFull[selection_time]
-                    try:
-                        valmatr = nc.variables['val'][idxVar,:,:][:,selection_time,:].data[:,:,idxStat]
-                    except:
-                        valmatr = nc.variables['val'][idxVar,:,:][:,selection_time,:][:,:,idxStat]
+                # Three axes
+                if type(idxStat) == list:
+                    valmatr = nc.variables['val'][idxVar,selection_time,:][:,:,idxStat] ## station is inner dimension
                 else:
-                    # no reduction, take full file
-                    hrlist = netcdftime.num2date(tvals,tunits)
-                    try:
-                        valmatr = nc.variables['val'][idxVar,:,:][:,:,idxStat].data
-                    except:
-                        valmatr = nc.variables['val'][idxVar,:,:][:,:,idxStat]
+                    # no station selection -- can just read it in one kick
+                    valmatr = nc.variables['val'][idxVar,selection_time,:]
             else:
-                #
-                # Selection can speed-up things very significantly, so allow a separate leg
-                #
-                if tStart or tEnd:
-                    hrlistFull = netcdftime.num2date(tvals,tunits)
-                    if tStart: tStart_ = tStart
-                    else: tStart_ = hrlistFull[0]
-                    if tEnd: tEnd_ = tEnd
-                    else: tEnd_ = hrlistFull[-1]
-                    selection_time = np.logical_and(np.logical_not(hrlistFull < tStart_), 
-                                                    np.logical_not(hrlistFull > tEnd_))
-                    hrlist = hrlistFull[selection_time]
-                    try:
-                        valmatr = nc.variables['val'][selection_time,:].data[:,idxStat]
-                    except:
-                        valmatr = (nc.variables['val'][selection_time,:])[:,idxStat]
-                else:
-                    # no reduction, take full file
-                    hrlist = netcdftime.num2date(tvals,tunits)
-                    try:
-                        valmatr = nc.variables['val'][:,idxStat].data
-                    except:
-                        valmatr = nc.variables['val'][:,idxStat]
+                    valmatr = nc.variables['val'][selection_time,idxStat]
             #
             # Fill value
             #
@@ -869,14 +852,8 @@ class TsMatrix:
                 valmatr = np.where(valmatr == fill_v, np.nan, valmatr)
             except:  # have to use default
                 try:
-#                    print(nc4.default_fillvals)
-#                    print(nc.variables['val'].dtype)
-#                    print({np.dtype('float32'):'f4',
-#                           np.dtype('float64'):'f8'}[nc.variables['val'].dtype])
                     flil_v = nc4.default_fillvals[{np.dtype('float32'):'f4',
                                                    np.dtype('float64'):'f8'}[nc.variables['val'].dtype]]
-#                    print('default fill value for', {np.dtype('float32'):'f4',
-#                           np.dtype('float64'):'f8'}[nc.variables['val'].dtype])
                     valmatr = np.where(np.logical_and(np.abs(valmatr-fill_v) > np.abs(1e-5*fill_v),
                                                       np.isfinite(valmatr)), valmatr, np.nan)
                 except:
@@ -889,61 +866,78 @@ class TsMatrix:
         
         return self(hrlist, obsStations, variables, valmatr, units, fill_v, timezone)
 
-
     #==========================================================================
     
     @classmethod
-    def extract_from_fields(self, stations, times, variable, inFieldNCFNm):
+    def extract_from_fields(cls, stations, times, variables, inFieldNCFNm, refheights=None):
         #
         # Reads the basic or processed model output - maps in netcdf format - and
         # extracts stations for the given time period or for the entire duration
         # the oberved period.
         # Returns the tsMatrix object, single-variable
+        # refheights  == reference heights for station extraction in _model_ vertical
         #
         print('Extracting from ', inFieldNCFNm)
         #
         # The source file
         #
-        ncfile = silamfile.SilamNCFile(inFieldNCFNm)
-        if ncfile.vertical is None:
-            reader = ncfile.get_reader(variable, mask_mode=False)
+        if isinstance(variables, list):
+            ncvars = variables
         else:
-            reader = ncfile.get_reader(variable, mask_mode=False, ind_level=0)
+            ncvars = [ variables ]
+
+        ncfile = silamfile.SilamNCFile(inFieldNCFNm)
+        izs  = None
+        if ncfile.vertical is None:
+            ind_level = None
+            if not refheights  is None:
+                raise ValueError("Attempt to read 3D from a file that has only 2D")
+        elif refheights  is None:
+            ind_level = 0
+        else:
+            ind_level = None ## 3D reader
+            bnds = ncfile.vertical.boundaries()
+            nz = ncfile.vertical.number_of_levels()
+            izs = np.searchsorted(bnds[1:],refheights) ## Underground stations to lowest layer
+
+
+
+            idxabove = np.where(izs >= nz) ##Above the domain top
+            if len(idxabove) > 0:
+           #    for ist in idxabove:
+            #    import pdb; pdb.set_trace()
+                print("%d of %d refheights above the domain top! Forcing them in."%(len(idxabove),len(refheights)))
+
+                izs[idxabove] =  nz - 1 
+
+
+        readers = []
+        for v in ncvars:
+            readers.append(ncfile.get_reader(v, mask_mode=False, ind_level=ind_level))
         #
-        # Stations
-        #
-        stats = sorted(stations)
-        stationdic={}
-        stlist = []
-        for st in stats:
-            stationdic[st.code] = st
-            stlist.append(st.code)
-        nStat = len(stlist)
-        stidx={}
-        for i,st in enumerate(stlist): stidx[st]=i
-        #
+        nStat = len(stations)
         # Times
         #
         if times is None:
-            hrlist = reader.t()
+            hrlist = readers[0].t()
         else:
             hrlist = np.array(times)
         ntimes = len(hrlist)
-        timeidx = {}
-        for i,t in enumerate(hrlist): 
-            timeidx[t]=i
+#        timeidx = {}
+#        for i,t in enumerate(hrlist): 
+#            timeidx[t]=i
         try: timezone = ncfile.variables['time'].timezone
         except: timezone = 'UTC'
         #
         # Valmatr
         #
-        valmatr= np.ones((ntimes,nStat),dtype=np.float32) * np.nan
+        valmatr= np.ones((len(ncvars),ntimes,nStat),dtype=np.float32) * np.nan
         #
         # checklist for locations of stations
         #
         nx = ncfile.grid.nx  ### IF reading expressioon form netcdf file directly reader.nx() triggers "NotImplemented error"
         ny = ncfile.grid.ny  ## I could not figure why, but ncfile.grid seems to be a good alternative. R
-        timesIn = np.array(reader.t())
+        timesIn = np.array(readers[0].t())
         # are all needed times present in the file?
         idxTimes = np.searchsorted(timesIn, hrlist)
         idxTimes[idxTimes >= len(timesIn)] = len(timesIn)-1  
@@ -953,54 +947,16 @@ class TsMatrix:
         stOK = np.array([False] * nStat)
         coords = []
         nOutside = 0
-        for i in range(nStat):
-            s = stationdic[stlist[i]]
-            ix, iy = reader.indices(s.lon, s.lat)
-            stOK[i] = ix >= 0 and ix < nx  and iy >= 0 and iy < ny
-            # append only coords to extract
-            if stOK[i]:
-                coords.append((ix,iy))
-            else:  
-              #  print(s, ix, iy, ' vs ', nx, ny, 'Station', s.code, ' is outside the domain')
-                nOutside += 1
+        stlons = np.array([s.lon for s in stations])
+        stlats = np.array([s.lat for s in stations])
+        ixs, iys = readers[0].indices(stlons, stlats)
+        stOK = (ixs >= 0) * (ixs < nx) * (iys >= 0) * (iys < ny)
+
+        nOutside = np.sum(np.logical_not(stOK))
+        #for i in  np.where(np.logical_not(stOK))[0]: ##where returns 1-element tuple 
+        #    print(stations[i], ixs[i], iys[i], ' vs ', nx, ny, 'Station', stations[i].code, ' is outside the domain')
         print('Stations outside the domain:', nOutside)
        # exit
-
-        # find the x and y indices (z assumed 0)
-        if3d = len(reader.z()) > 1
-        # Is times big? Do we report the progress?
-        if ntimes > 10000: counter = 1
-        else: counter = None
-
-        selst = np.array(stOK)
-
-        #turn array of tuples into tuple of arrays
-        (ixs,iys) = zip(*coords)
-        coords = (np.array(ixs),np.array(iys))
-
-        for it, t in enumerate(hrlist):  #range(ntimes):
-            if counter:
-                if counter % 5000 == 0: print('Reading: ' + str(hrlist[it]))
-                counter += 1
-            if idxTimesOK[it]:
-                reader.seek_abs(idxTimes[it])   #goto(t)     #hrlist[it])
-                field = reader.read(1) ## Reader might return strange things
-                if isinstance(field, np.ndarray):
-                    valmatr[it,selst] = field[coords]
-                elif isinstance(field, np.ma.MaskedArray):
-                    valmatr[it,selst] = field.data[coords]
-                else:
-                    raise TypeError("Reader returned %s"%(type(field)))
-            else:
-                print('Time ', hrlist[it], ' is not in the input nc file')
-
-        # whatever fill value is in the input file, here it is nan
-        valmatr = np.where(valmatr == ncfile.fill_value(variable), np.nan, valmatr)
-        if np.sum(np.logical_not(np.isfinite(valmatr))) > 0:
-            print('TSM Bad values:', np.sum(np.logical_not(np.isfinite(valmatr))))
-
-        it=(np.any(np.isfinite(valmatr),axis=1))
-        print("%d valid time steps, %g stations" % (np.sum(it), len(stats)))
         # note that reader is projected readers, i.e. the actual reader is wrapped
 #        print(reader)
 #        try: print(reader.wrapped.units)
@@ -1008,36 +964,200 @@ class TsMatrix:
 #        try: print(reader.wrapped.vars.units)
 #        except: print('failed reader.wrapped.vars.units')
         try:
-            tsmatr = self(hrlist, stats, [variable], valmatr, [reader.wrapped.ncvar.units],
-                          -999999, timezone)
-        except:
+            units = [ r.wrapped.ncattr('units') for r in readers ]
+        except AttributeError:
             try:
-                tsmatr = self(hrlist, stats, [variable], valmatr, [reader.wrapped.vars[0].units],
-                              -999999, timezone)
-            except:
-                print("Unknown units in %s" % (inFieldNCFNm))
-                tsmatr = self(hrlist, stats, [variable], valmatr, ['unknown'], -999999, timezone)
-    
-        return tsmatr
+                units = [ r.wrapped.vars[0].units for r in readers ]
+            except AttributeError:
+                try:
+                    units = [ r.wrapped.ncvar.units for r in readers ]
+                except AttributeError:
+                    print("Unknown units in %s" % (inFieldNCFNm))
+                    units = [ 'unknown' for r in readers ]
+
+        # Is times big? Do we report the progress?
+        if ntimes > 10000: counter = 1
+        else: counter = None
+
+        if izs is None:
+            coords = (ixs[stOK], iys[stOK]) ## 2D fields to come
+        else:
+            coords = (ixs[stOK], iys[stOK], izs[stOK]) ## 3D fields to come
+
+        for it, t in enumerate(hrlist):  #range(ntimes):
+            if counter:
+                if counter % 5000 == 0: print('Reading: ' + str(hrlist[it]))
+                counter += 1
+            if idxTimesOK[it]:
+                for iv, v in enumerate(ncvars):
+                    readers[iv].seek_abs(idxTimes[it])   #goto(t)     #hrlist[it])
+                    field = readers[iv].read(1) ## Reader might return strange things
+                    # masked or not?                    
+                    if isinstance(field, np.ndarray):
+                        valmatr[iv,it,stOK] = field[coords]
+                    elif isinstance(field, np.ma.MaskedArray):
+                        valmatr[iv,it,stOK] = field.data[coords]
+                    else:
+                        raise TypeError("Reader returned %s"%(type(field)))
+            else:
+                print('Time ', hrlist[it], ' is not in the input nc file')
+
+        # whatever fill value is in the input file, here it is nan
+        valmatr = np.where(valmatr == ncfile.fill_value(ncvars[0]), np.nan, valmatr)
+        if np.sum(np.logical_not(np.isfinite(valmatr))) > 0:
+            print('TSM Bad values:', np.sum(np.logical_not(np.isfinite(valmatr))))
+
+        it=(np.any(np.isfinite(valmatr),axis=1))
+        print("%d valid time steps, %d (of %d) stations" % (np.sum(it), np.sum(stOK), len(stations)))
+
+        return cls(hrlist, stations, ncvars, valmatr, units , -999999, timezone)
 
 
     #==========================================================================
     
-    def fromTimeSeries(self, tseries, unit):
+    @classmethod
+    def fromTimeSeries(self, tseries, unit, time_tag='end'):
+        #
         # convert timeseries objects to tsMatrix objects
-        stations = [(stations.station for ts in tseries)]
-        valmatr= np.float32(np.nan) * np.empty((len(tseries.times()), len(stations)), 
+        # Requirement: identical time step in all series
+        #
+        stations = list( (ts.station for ts in tseries) )
+        # A problem: time series do not store missing data. Have to figure out the regular time axis
+        tStart = tseries[0].times()[0]
+        tEnd = tseries[0].times()[-1]
+        tStep = tseries[0].durations()[0]
+        # find the earliest and latest times, and check the averaging step
+        for ts in tseries:
+            if len(ts.times()) == 0: continue
+            if np.any(np.array(ts.durations()) != tStep):
+                raise ValueError('Non-constant duration of time series %s' % ts.station.code)
+            if tStart > ts.times()[0]: tStart = ts.times()[0]
+            if tEnd < ts.times()[-1]: tEnd = ts.times()[-1]
+        # timeseries put the time tag at the beginning of the averaging interval
+        # SILAM - to the end. CDO assumes middle but allows overriding. Here, the default is
+        # as SILAM does, but alsp allows overriding.
+        if time_tag == 'beginning': tShift = dt.timedelta(hours=0)
+        elif time_tag == 'end':     tShift = tStep
+        elif time_tag == 'middle':  tShift = tStep / 2.
+        else: raise ValueError('Unknown time_tag: ' + str(time_tag))
+        tsM_times = np.array(list( (tStart + tShift + tStep * i
+                                    for i in range(np.int32(np.round((tEnd-tStart)/tStep))))))
+        # create the matrix
+        valmatr= np.float32(np.nan) * np.empty((len(tsM_times),len(stations)), 
                                                dtype=np.float32)
+        # Fill it in
+        idxSort = np.argsort(stations)
         for iSt in range(len(stations)):
-            valmatr[:,iSt] = tseries[iSt].data()
-        return self(tseries.times(), stations, [tseries.quantity], valmatr, unit, timezone='UTC')
+            for it, t in enumerate(tsM_times):
+                try: valmatr[it,idxSort[iSt]] = tseries[idxSort[iSt]][t]
+                except: pass
+        return self(tsM_times, sorted(stations), [tseries[0].quantity], valmatr, [unit], timezone='UTC')
+
+    @classmethod
+    def fromSilamLog(cls, infile):
+        descr="""
+            converts silam logfile to tsmatrix with TOTAL MASS REPORT + emissions
+            species appear as variables, budget components appear as "stations"
+        """
+
+        if infile == "-":
+            inf=sys.stdin
+            closeInf = False
+        else:
+            if infile.endswith(".bz2"):
+                inf = bz2.open(infile,'rt')
+            elif infile.endswith(".gz"):
+                inf = gzip.open(infile,'rt')
+            else:
+                inf = open(infile,'rt')
+            closeInf = True
+
+        specieslines = {}
+        emstot = {}
+        times=[]
+
+        prevdate=""
+        date=""
+        replen=0 ## Number of words in a report line
+        for l0 in inf:
+            l=l0.lstrip() ## Get to after init
+            if l.startswith("Last output time now:"):
+                date=l.split("now:")[1][:-1]
+                continue
+
+            # Increment emissions
+            if l.startswith("Total injected emission mass as counted from sources"):
+                for l1 in inf:
+                    l1 = l1.lstrip()
+                    a=l1.split()
+                    if a[0].endswith("__src"):
+                        emstot[a[0][0:-5]] += float(a[-1])
+                    else:
+                        break
+                continue
+
+            ##
+            ## Read mass report
+            if l.startswith("========== TOTAL MASS REPORT ============"):
+                if prevdate >=  date:  ## Several massreports per timestep, only the last one counts
+                    continue
+                prevdate = date
+                times.append(date)
+
+                l=next(inf)
+                head=next(inf).lstrip()
+                assert head.startswith("Species")
+                replen = len(head.split())
+                    
+                for l1 in inf:
+                    l1 = l1.lstrip()
+                    if l1.startswith("Grand"): ## End of report
+                        break
+                    a=l1.split()
+                    if len(a) != replen:
+                        print(head)
+                        print(l1)
+                        print(replen)
+                        raise ValueError("Strange number of words")
+                    if not a[0] in specieslines:
+                        specieslines[a[0]] = []
+                        emstot[a[0]] = 0.
+                    specieslines[a[0]].append(l1[:-1]+ " %10.5e"%(emstot[a[0]],)) 
+
+        if closeInf:
+            inf.close()
+
+        ## Parse strings
+        species = sorted(emstot.keys())
+        fields = head.split()[1:] + ['Emis']
+        timestamps = np.array([dt.datetime.strptime( t, "%Y-%m-%d %H:%M:%S.0") for t in times])
+        nt,nsp,nf = len(timestamps), len(species), len(fields)
+        valmatr = np.zeros((nsp,nt,nf), dtype=np.float32) ## species -> variable (might have different units)
+                                       ## field  -> stations
+
+        stations = [ ST.Station( fld, 'X', np.nan, np.nan, np.nan, "", "") for fld in sorted(fields) ]
+        storder = np.argsort(fields)
+        for isp, sp in enumerate(species):
+            for it, l in enumerate(specieslines[sp]):
+                linevals = np.array ([ float(v) for v in l.split()[1:] ]) ## 
+                valmatr[isp,it,:] = linevals[storder]  ##In alphabetic order
+
+
+        return cls(timestamps,stations, species, valmatr, ['mass_unit']*nsp)        
 
 
     #==========================================================================
 
-    def to_map(self, grid, fill_value, outFNm):
+    def to_map(self, grid, fill_value, outFNm, timeStart=None, timeEnd=None):
         # converts the tsMatrix to a map and stores into a file
         # open the output file
+        if timeStart is None: idxStart = 0
+        else: ixdStart = np.searchsorted(self.times, timeStart)
+        if timeEnd is None: idxEnd = len(self.times)
+        else: idxEnd = max(np.searchsorted(self.times, timeStart) + 1, len(self.times))
+        if idxStart >= idxEnd:
+            print('Cannot store the tsMatrix: start-end indices in conflict',idxStart, idxEnd)
+            raise
         outF = silamfile.open_ncF_out(outFNm, 
                                       'NETCDF4', grid, 
                                       silamfile.SilamSurfaceVertical(),
@@ -1067,195 +1187,200 @@ class TsMatrix:
     #==========================================================================
     
     def join(self, tsMatrToAdd):
+        return concatenate([self,tsMatrToAdd]) 
+    
+    #==========================================================================
+    
+    @classmethod
+    def concatenate(cls, arMatrices):
         #
-        # Extends the current matrix with the additional one
+        # Concatenates matrices in time and/or station dimension
         # Can do it for both statoin dimension and for time dimension
         # Overlapping times / stations are not added. Sorting of times is
         # verified, sorting of stations is not.
+
+        if len(arMatrices) == 1:
+            return arMatrices[0]
+
+        timezone = arMatrices[0].timezone
+        variables = arMatrices[0].variables
+        units = arMatrices[0].units
+        
+        stationdic={}
+        timedic={}
+        for tsm in arMatrices:
+            for st in tsm.stations:
+                stationdic[st.code] = st
+
+            for t in tsm.times:
+                timedic[t] = 1
+
+            if timezone !=  tsm.timezone:
+                print(timezone, '!=',  tsm.timezone)
+                raise ValueError("Different timezone in tsmatrices to concatenate")
+
+            if np.any(variables != tsm.variables):
+                print('variables = ',    variables )
+                print('tsm.variables = ', tsm.variables )
+                raise ValueError('join is only allowed for same set of variables')
+        
+            if np.any(units != tsm.units):
+                print('units = ',    units )
+                print('tsm.units = ', tsm.units )
+                raise ValueError('join is only allowed for same set of units')
+        
+        timesNew = sorted(timedic.keys())
+        codesNew = np.array(sorted(stationdic.keys()))
+        stationsNew = [ stationdic[code] for code in codesNew ]
+
         #
-        if self.timezone !=  tsMatrToAdd.timezone:
-            print('### Cannot add variables from TSM with a different time zone')
-            raise ValueError
-        #
-        # Build new dimensions
-        #
-        timesNew = sorted(list(set(self.times).union(set(tsMatrToAdd.times))))   # new time dimension
-        stationsNew = sorted(list(set(self.stations).union(set(tsMatrToAdd.stations)))) # new stations
-        print('timesNes ', len(timesNew), ',  stationsNew = ', len(stationsNew))
-        if np.any(self.variables != tsMatrToAdd.variables):
-            print('join is only allowed for same set of variables')
-            raise ValueError
-        #
-        # Save own data to a temporary and define new size of the array
-        # resize does not work here
-        #
-        arTmp = self.vals.copy()  # temporary
-        if len(self.variables) == 1:
-            self.vals = np.ones(shape=(len(timesNew), len(stationsNew))) * np.nan
+        nV, nT, nSt = len(variables), len(timesNew), len(stationsNew)
+
+        if nV == 1:
+            values = np.ones(shape=(nT, nSt), dtype=np.float32) * np.nan
         else:
-            self.vals = np.ones(shape=(len(self.variables), len(timesNew), len(stationsNew))) * np.nan
-        #
-        # get indices of the own stations and own times in the new lists
-        # To it sequentially for both matrices. Note that if they overlap, the 
-        # itnersection will be written twice and the tsMatrix to add will overwrite
-        # the initial values
-        #
-        # self tsMatrix to new vals
-        idxStatInNew = np.searchsorted(stationsNew, self.stations)
-        idxTimesInNew = np.searchsorted(timesNew, self.times)
-        if len(self.variables) == 1:
-            for iTime in range(len(idxTimesInNew)):
-                self.vals[idxTimesInNew[iTime], idxStatInNew] = arTmp[iTime,:]  # own values are back
-        else:
-            for iTime in range(len(idxTimesInNew)):
-                self.vals[:,idxTimesInNew[iTime], idxStatInNew] = arTmp[:,iTime,:]  # own values are back
-        # tsMatrix to add to the new vals
-        idxStatInNew = np.searchsorted(stationsNew, tsMatrToAdd.stations)
-        idxTimesInNew = np.searchsorted(timesNew, tsMatrToAdd.times)
-        if len(self.variables) == 1:
-            for iTime in range(len(idxTimesInNew)):
-                self.vals[idxTimesInNew[iTime], idxStatInNew] = tsMatrToAdd.vals[iTime,:]  # new values added
-        else:
-            for iTime in range(len(idxTimesInNew)):
-                self.vals[:,idxTimesInNew[iTime], idxStatInNew] = tsMatrToAdd.vals[:,iTime,:]  # new values added
-        self.times = timesNew.copy()
-        self.stations = stationsNew.copy()
+            values = np.ones(shape=(nV, nT, nSt), dtype=np.float32) * np.nan
+
+
+        for tsm in arMatrices:
+            stcodes = np.array([ st.code for st in tsm.stations ])
+                        
+            idxStatInNew = np.searchsorted(codesNew, stcodes)
+            idxTimesInNew = np.searchsorted(timesNew, tsm.times)
+            if nV == 1:
+                for iTime in range(len(idxTimesInNew)):
+                    values[idxTimesInNew[iTime], idxStatInNew] = tsm.vals[iTime,:]
+            else:
+                for iTime in range(len(idxTimesInNew)):
+                    values[:,idxTimesInNew[iTime], idxStatInNew] = tsm.vals[:,iTime,:]
             
-        return self        
+        return cls(timesNew, stationsNew, variables, values, units , -999999, timezone)
 
  
     #==========================================================================
     
     def add_variables(self, arMatricesNew):
+        # Old interface backward compatible
+        # spoils "self"
+        self = merge_variables([self] + arMatrices)
+        return self
+
+    #==========================================================================
+    
+    @classmethod
+    def merge_variables(self, arMatrices):
         #
-        # A mirroring way of joining the matrices: merging multi-variables but
+        # Merging multi-variables but
         # otherwise identical matrices
         #
-        variablesNew = set(self.variables.copy())
-        for M in arMatricesNew:
-            if self.timezone !=  M.timezone:
+        mold = arMatrices[0]
+        nt = len(mold.times)
+        nst = len(mold.stations)
+        variables = set(mold.variables)
+
+        for M in arMatrices[1:]:
+            if mold.timezone !=  M.timezone:
                 print('### Cannot add variables from TSM with a different time zone')
-                print('Me: ', self.variables, self.timezone)
+                print('Me: ', mold.variables, mold.timezone)
                 print('To add: ', M.variables, M.timezone)
                 raise ValueError
-            if np.any(self.times != M.times):
+            if np.any(mold.times != M.times):
                 print('Cannot merge variables for different times')
-                print('Me times: ', self.variables, self.times)
+                print('Me times: ', mold.variables, mold.times)
                 print('To add times: ', M.variables, M.times)
                 raise ValueError
-            if np.any(self.stations != M.stations):
+            if np.any(mold.stations != M.stations):
                 print('Cannot merge variables for different stations')
-                print('Me stations: ', self.variables, self.stations)
+                print('Me stations: ', mold.variables, mold.stations)
                 print('To add stations: ', M.variables, M.stations)
                 raise ValueError
-            variablesNew = variablesNew.union(set(M.variables))
-        if len(variablesNew) == 1: return  # nothing to do
+            variables = variables.union(set(M.variables))
         
-        variablesNew = np.array(sorted(list(variablesNew)))
-        # start merging the data
-        arTmp = self.vals.copy()  # temporary
-        U = self.units.copy()
-        self.vals = np.ones(shape=(len(variablesNew),len(self.times),len(self.stations))) * np.nan
-        self.units = [''] * len(variablesNew)
-        # put own dat back
-        idxV = np.searchsorted(variablesNew, self.variables)
-        if len(self.variables) == 1:
-            self.vals[idxV[0],:,:] = arTmp[:,:]
-            self.units[idxV[0]] = U[0]
-        else:
-            self.vals[idxV,:,:] = arTmp[:,:,:]
-            self.units[idxV] = U[:]
-        # add other amtrices
-        for M in arMatricesNew:
-            idxV = np.searchsorted(variablesNew, M.variables)
-            if len(M.variables) == 1:
-                self.vals[idxV[0],:,:] = M.vals[:,:]
-                self.units[idxV[0]] = U[0]
-            else:
-                self.vals[idxV,:,:] = M.vals[:,:,:]
-                self.units[idxV] = U[:]
+        variables = np.array(sorted(list(variables)))
+        nVar = len(variables)
+
+        vals = np.ones(shape=(nVar, nt, nst), dtype = np.float32) * np.nan
+        units = np.array([''] * nVar)
+        # add  amtrices
+        for M in arMatrices:
+            idxV = np.searchsorted(variables, M.variables)
+            units[idxV] = M.units[:] ## Units always array
+            if len(M.vals.shape) == 2:
+                idxV = idxV[0]
+            vals[idxV,:,:] = M.vals
             
-        self.variables = variablesNew
-        return self
+        return self(mold.times, mold.stations, variables, vals, units, mold.fill_value, mold.timezone)
             
         
     #==========================================================================
     
-    def intercept(self, timesIn, stationsIn, variablesIn=None):
+    def subset(self, timesIn, stationsIn, variablesIn=None):
         #
-        # Cuts the self down to the given set of statoins and times
-        # The result has the intercept of stations and times
-        # Note that resorting is not needed: we just remove some elelemts
+        # Subsets the self down to the given set of stations and times. The input
+        # can have stations/times non-existing in self, those will be ignored.
+        # Note that re-sorting is not needed: we just remove some elelemts
         #
+        # Pick only stations and times from self  
         if variablesIn is None:
             variablesNew = self.variables
         else:
             variablesNew = sorted(np.array(set(variablesIn).intersection(set(self.variables))))
-        stationsNew = sorted(np.array(set(stationsIn).intersection(set(self.stations))))
-        timesNew = sorted(np.array(set(timesIn).intersection(set(self.times))))
+        stationsNew = sorted(np.array(list(set(stationsIn).intersection(set(self.stations)))))
+        timesNew = sorted(np.array(list(set(timesIn).intersection(set(self.times)))))
         #
         # There might be a chance for shortcuts if In dataset actually the same as self
         #
         if (len(timesNew) == len(self.times) and len(stationsNew) == len(self.stations) and 
             len(variablesNew) == len(self.variables)):
             return self
-        # work has to be done. Save and redefine own array
-        arTmp = self.vals.copy()  # temporary
-        # Work is strongly different for single- andmulti-variable cases
+        # work has to be done. Prepare a new tsMatrix
+        # Work is strongly different for single- and multi-variable cases
         if len(variablesNew) == 1:
-            self.vals = np.ones(shape=(len(timesNew), len(stationsNew))) + np.nan
+            arTmp = np.ones(shape=(len(timesNew), len(stationsNew))) * np.nan
             # Again trying to use shortcuts...
             if len(timesNew) == len(self.times): 
-                # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                self.vals[:,:] = arTmp[:,np.searchsorted(stationsNew, self.stations) < len(stationsNew)] 
+                # same times, mind that they are always sorted in tsMatrices. Stations differ
+                arTmp[:,:] = self.vals[:,np.searchsorted(self.stations, stationsNew)] 
             elif len(stationsNew) == len(self.stations): 
-                # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                self.vals[:,:] = arTmp[np.searchsorted(timesNew, self.times) < len(timesNew), :]
+                # same stations, mind that they are always sorted in tsMatrices. Times differ
+                arTmp[:,:] = self.vals[np.searchsorted(self.times,timesNew), :]
             else:
-                istOK = np.searchsorted(stationsNew, self.stations) < len(stationsNew)
-                itimeOK = np.searchsorted(timesNew, self.times) < len(timesNew)
-                itOut = 0
-                for iT in range(len(timesNew)):
-                    if itimeOK[iT]:
-                        self.vals[itOut,:] = arTmp[iT,istOK]
-                        iiOut += 1
+                idxSt = np.searchsorted(self.stations, stationsNew)
+                idxTime = np.searchsorted(self.times, timesNew)
+                for iT, idxT in enumerate(idxTime):
+                    arTmp[iT,:] = self.vals[idxT,idxSt]
         else:
-            self.vals = np.ones(shape=(len(variablesNew), len(timesNew), len(stationsNew))) * np.nan
+            arTmp = np.ones(shape=(len(variablesNew), len(timesNew), len(stationsNew))) * np.nan
             # Again trying to use shortcuts...
             if variablesNew == self.variables:  # chance for simplification
                 if len(timesNew) == len(self.times): 
                     # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                    self.vals[:,:,:] = arTmp[:,:,np.searchsorted(stationsNew, self.stations) < len(stationsNew)] 
+                    arTmp[:,:,:] = self.vals[:,:,np.searchsorted(self.stations, stationsNew)] 
                 elif len(stationsNew) == len(self.stations): 
                     # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                    self.vals[:,:,:] = arTmp[:,np.searchsorted(timesNew, self.times) < len(timesNew),:]
+                    arTmp[:,:,:] = self.vals[:,np.searchsorted(self.times, timesNew),:]
                 else:
-                    istOK = np.searchsorted(stationsNew, self.stations) < len(stationsNew)
-                    itimeOK = np.searchsorted(timesNew, self.times) < len(timesNew)
-                    itOut = 0
-                    for iT in range(len(timesNew)):
-                        if itimeOK[iT]:
-                            self.vals[:,itOut,:] = arTmp[:,iT,istOK]
-                            iiOut += 1
+                    idxSt = np.searchsorted(self.stations, stationsNew)
+                    idxTime = np.searchsorted(self.times, timesNew)
+                    for iT, idxT in enumerate(idxTime):
+                        arTmp[:,iT,:] = self.vals[:,idxT,idxSt]
             else:
+                # go variable by variable
                 idxNewVars = np.searchsorted(self.variables, variablesNew)
-                for iv in idxNewVars:
+                for iv, idxV in idxNewVars:
                     if len(timesNew) == len(self.times): 
                         # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                        self.vals[iv,:,:] = arTmp[iv,:,np.searchsorted(stationsNew, 
-                                                                       self.stations) < len(stationsNew)]
-                    elif len(stationsNew) == len(self.stations):
+                        arTmp[iv,:,:] = self.vals[idxV,:,np.searchsorted(self.stations, stationsNew)] 
+                    elif len(stationsNew) == len(self.stations): 
                         # same times, mind that they are always sorted in tsMatrices. Statoins differ
-                        self.vals[iv,:,:] = arTmp[iv, np.searchsorted(timesNew, self.times) < len(timesNew), :]
+                        arTmp[iv,:,:] = self.vals[idxV,np.searchsorted(self.times, timesNew),:]
                     else:
-                        istOK = np.searchsorted(stationsNew, self.stations) < len(stationsNew)
-                        itimeOK = np.searchsorted(timesNew, self.times) < len(timesNew)
-                        itOut = 0
-                        for iT in range(len(timesNew)):
-                            if itimeOK[iT]:
-                                self.vals[iv,itOut,:] = arTmp[iv,iT,istOK]
-                                iiOut += 1
-        return self
+                        idxSt = np.searchsorted(self.stations, stationsNew)
+                        idxTime = np.searchsorted(self.times, timesNew)
+                        for iT, idxT in enumerate(idxTime):
+                            arTmp[iv,iT,:] = self.vals[idxV,idxT,idxSt]
+
+        return TsMatrix(timesNew, stationsNew, variablesNew, arTmp, self.units, self.fill_value, self.timezone)
             
         
     #==========================================================================
@@ -1319,10 +1444,11 @@ class TsMatrix:
         
     #==========================================================================
 
-    def average(self, chTargetAveraging):
+    def average(self, chTargetAveraging, time_tag='end'):
         #
         # Takes the given TSM and performs an averaging as required. So-far, only some
         # averaging types are introduced.
+        # DAILY averaging of all kinds is the only one implemented here
         #
         # Stupidity check
         #
@@ -1353,51 +1479,73 @@ class TsMatrix:
         nDays = (idxEnd - idxStart) // 24  #+ idxAvStart + idxAvEnd
         #
         # Averaged times. Note: the time tag is at the MIDDLE of the averaging interval,
-        # i.e. yr-mon-day 11:30 is the daily average for the day. This is to make it same
-        # CDO would make
+        # i.e. yr-mon-day 11:30 is the daily average for the day. This is to make it same as
+        # what CDO would make
+        # But one can overwrite this: SILAM rather has a time tag at the end of the period,
+        # whereas MMAS standard puts it to the beginning.
         #
-        
-        avTime0 = self.times[idxStart]  + 11 * one_hour + 30 * one_minute 
+        if chTargetAveraging in 'daymean daymin daymax daysum MDA8 M817'.split():
+            if time_tag == 'middle': avTime0 = self.times[idxStart] + 12 * one_hour #+ 30 * one_minute
+            elif time_tag == 'beginning': avTime0 = self.times[idxStart]
+            elif time_tag == 'end': avTime0 = self.times[idxStart]  + one_day
+            else: raise ValueError('TSM average: Strange time_tag: ' + time_tag)
+        else:
+            raise ValueError('TSM average: strange averaging type: ' + chTargetAveraging)
+            
         avTimes = [ avTime0 + one_day * i for i in range(nDays) ] 
 
         if len(self.variables) == 1:
             nhr, nst = self.vals.shape
             valsAv_shape = (nDays, nst)
             shapex = (nDays,24, nst)
-            avax = 1
+            if chTargetAveraging == 'daymean':                # From hourly to daily mean
+                valsAv = np.nanmean(self.vals[idxStart:idxEnd,:].reshape(shapex),
+                                    axis=1).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daymin':                # From hourly to daily min
+                valsAv = np.nanmin(self.vals[idxStart:idxEnd,:].reshape(shapex),
+                                   axis=1).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daymax':                # From hourly to daily max
+                valsAv = np.nanmax(self.vals[idxStart:idxEnd,:].reshape(shapex),
+                                   axis=1).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daysum':                # From hourly to daily sum
+                valsAv = np.sum(self.vals[idxStart:idxEnd,:].reshape(shapex),
+                                axis=1).reshape(valsAv_shape)   ### NaNs make day NaN
+            elif chTargetAveraging == 'MDA8': # Daily max of 8-hour mean
+                import bottleneck as bn
+                arr = bn.move_mean(self.vals, window=8, axis=1, min_count=1)  ## over time
+                valsAv = arr[idxStart:idxEnd,:].reshape(shapex).max(axis=1).reshape(valsAv_shape)
+            elif chTargetAveraging == 'M817':  ## Mean of 8-17 
+                valsAv = np.nanmean(self.vals[idxStart:idxEnd,:].reshape(shapex)[:,8:17,:],
+                                    axis=1).reshape(valsAv_shape)
+            else:
+                print('Unknown target averagind type:', chTargetAveraging)
+                raise ValueError
         else:
             nvars, nhr, nst =  self.vals.shape
             valsAv_shape = (nvars, nDays, nst)
-            shapex = ( nvars, nDays, 24, nst)
-            avax = 2
-
-        #
-        # Do the required averaging
-        #
-        if chTargetAveraging == 'daymean':
-            # From hourly to daily mean
-            valsAv = np.nanmean(self.vals[idxStart:idxEnd].reshape(shapex),   axis=avax).reshape(valsAv_shape)
-        elif chTargetAveraging == 'daymin':
-            # From hourly to daily min
-            valsAv = np.nanmin(self.vals[idxStart:idxEnd].reshape(shapex), axis=avax).reshape(valsAv_shape)
-        elif chTargetAveraging == 'daymax':
-            # From hourly to daily max
-            valsAv = np.nanmax(self.vals[idxStart:idxEnd].reshape(shapex), axis=avax).reshape(valsAv_shape)
-        elif chTargetAveraging == 'daysum':
-            # From hourly to daily sum
-            valsAv = self.vals[idxStart:idxEnd].reshape(shapex).sum(axis=avax).reshape(valsAv_shape)   ### NaNs make day NaN
-        elif chTargetAveraging == 'MDA8': # Daily max of 8-hour mean
-            import bottleneck as bn
-            arr = bn.move_mean(self.vals, window=8, axis=(avax-1), min_count=1)  ## over time
-            valsAv = arr[idxStart:idxEnd].reshape(shapex).max(axis=avax).reshape(valsAv_shape)
-        elif chTargetAveraging == 'M817':  ## Mean of 8-17 
-            if avax == 1:
-                valsAv = np.nanmean( self.vals[idxStart:idxEnd].reshape(shapex)[:,8:17,:], axis=avax).reshape(valsAv_shape)
+            shapex = (nvars, nDays, 24, nst)
+            if chTargetAveraging == 'daymean':                # From hourly to daily mean
+                valsAv = np.nanmean(self.vals[:,idxStart:idxEnd,:].reshape(shapex),
+                                    axis=2).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daymin':                # From hourly to daily min
+                valsAv = np.nanmin(self.vals[:,idxStart:idxEnd,:].reshape(shapex),
+                                   axis=2).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daymax':                # From hourly to daily max
+                valsAv = np.nanmax(self.vals[:,idxStart:idxEnd,:].reshape(shapex),
+                                   axis=2).reshape(valsAv_shape)
+            elif chTargetAveraging == 'daysum':                # From hourly to daily sum
+                valsAv = np.sum(self.vals[:,idxStart:idxEnd,:].reshape(shapex),
+                                axis=2).reshape(valsAv_shape)   ### NaNs must make daysum == NaN
+            elif chTargetAveraging == 'MDA8':                  # Daily max of 8-hour mean
+                import bottleneck as bn
+                arr = bn.move_mean(self.vals, window=8, axis=1, min_count=1)  ## over time
+                valsAv = arr[:,idxStart:idxEnd,:].reshape(shapex).max(axis=2).reshape(valsAv_shape)
+            elif chTargetAveraging == 'M817':                  # Mean of 8-17 
+                valsAv = np.nanmean(self.vals[:,idxStart:idxEnd,:].reshape(shapex)[:,8:17,:],
+                                    axis=2).reshape(valsAv_shape)
             else:
-                valsAv = np.nanmean( self.vals[idxStart:idxEnd].reshape(shapex)[:,:,8:17,:], axis=avax).reshape(valsAv_shape)
-        else:
-            print('Unknown target averagind type:', chTargetAveraging)
-            raise ValueError
+                print('Unknown target averagind type:', chTargetAveraging)
+                raise ValueError
 
         return TsMatrix(avTimes, self.stations, self.variables, valsAv, self.units, 
                         self.fill_value, self.timezone)
@@ -1444,7 +1592,7 @@ class TsMatrix:
         # Collect the stations and data into the new sets
         for iSt, stCode in enumerate(stGrdCodesSortedUniq):
             idxSt = idxInUniq == iSt  # indices of initial stations falling into this grid cell
-            grdStat.append(stations.Station(stCode,
+            grdStat.append( ST.Station(stCode, ##FIXME
                                             '_'.join(list((s.code for s in arStations[idxSt]))),
                                             grdLons[idxSt][0], grdLats[idxSt][0],
                                             np.nanmean(list((s.hgt for s in arStations[idxSt]))),
@@ -1478,93 +1626,74 @@ class TsMatrix:
                              self.vals[:,:,arStatInGrid], self.units, self.fill_value, self.timezone))
 
 
-    #============================================================================
+    #==========================================================================
     
-    @classmethod
-    def verify(self, chFNmIn, log):
+    def verify(self, chFNmIn=None, log=None):
         #
-        # Verifies the given tsMatrix, either self or taking it from the file. 
-        # Does not generate errors, only reports the content of the matrix, and returns 
-        # the number of nan-s
-        # The report is written to the log file if it is provided. Printed otherwise
+        # Just a convenience encapsuation of a generic finction.
         #
-        if chFNmIn is None:
-            nNan = np.sum(np.isnan(self.vals))
-            nFinite = np.sum(np.isfinite(self.vals))
-            vMin = np.nanmin(self.vals)
-            vMean = np.nanmean(self.vals)
-            vMax = np.nanmax(self.vals)
-            vMed = np.nanmedian(self.vals)
-            if len(self.variables) == 1:
-                ifDimsOK = (self.times.size == self.vals.shape[0] and 
-                            len(self.stations) == self.vals.shape[1] and
-                            len(self.vals.shape) == 2)
-            else:  
-                ifDimsOK = (self.times.size == self.vals.shape[1] and 
-                            len(self.stations) == self.vals.shape[2] and
-                            len(self.variables) == self.vals.shape[0] and
-                            len(self.vals.shape) == 3)
-            if ifDimsOK: chDimsOK = 'dims_OK'
-            else: chDimsOK = '###>>_problematic_dimensions'
-            if nFinite == self.vals.size and np.all(np.isfinite([vMin,vMean,vMax,vMed])):
-                chValsOK = 'vals_OK'
-            else: chValsOK = '###>>_suspicious_vals'
-             
-            if log is None:
-                print('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
-                      (chDimsOK, chValsOK, self.times.size, len(self.stations), len(self.variables),
-                       str(self.vals.shape), ' '.join(self.units)) +
-                      ' fill_value=%g timezone=%s' % (self.fill_value, self.timezone) +
-                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
-                      (nNan, nFinite, self.vals.size - nFinite - nNan, 
-                       np.nanmin(self.vals), np.nanmean(self.vals), np.nanmax(self.vals), np.nanmedian(self.vals)))
-            else:
-                log.log('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
-                      (chDimsOK, chValsOK, self.times.size, len(self.stations), len(self.variables),
-                       str(self.vals.shape), ' '.join(self.units)) +
-                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
-                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
-                      (nNan, nFinite, self.vals.size - nFinite - nNan, 
-                       np.nanmin(self.vals), np.nanmean(self.vals), np.nanmax(self.vals), np.nanmedian(self.vals)))
-        else:
-            tsM = TsMatrix.fromNC(chFNmIn)
-            nNan = np.sum(np.isnan(tsM.vals))
-            nFinite = np.sum(np.isfinite(tsM.vals))
-            vMin = np.nanmin(tsM.vals)
-            vMean = np.nanmean(tsM.vals)
-            vMax = np.nanmax(tsM.vals)
-            vMed = np.nanmedian(tsM.vals)
-            if nFinite == tsM.vals.size and np.all(np.isfinite([vMin,vMean,vMax,vMed])): 
-                chValsOK = 'vals_OK'
-            else: chValsOK = '###>>_suspicious_vals'
-            if len(tsM.variables) == 1:
-                ifDimsOK = (tsM.times.size == tsM.vals.shape[0] and 
-                            len(tsM.stations) == tsM.vals.shape[1] and
-                            len(tsM.vals.shape) == 2)
-            else:  
-                ifDimsOK = (tsM.times.size == tsM.vals.shape[1] and 
-                            len(tsM.stations) == tsM.vals.shape[2] and
-                            len(tsM.variables) == tsM.vals.shape[0] and
-                            len(tsM.vals.shape) == 3)
-            if ifDimsOK: chDimsOK = 'dims_OK'
-            else: chDimsOK = '###>>_problematic_dimensions'
-            if log is None:
-                print('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
-                      (chDimsOK, chValsOK, tsM.times.size, len(tsM.stations), len(tsM.variables),
-                       str(tsM.vals.shape), ' '.join(tsM.units)) +
-                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
-                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
-                      (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
-                       np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals)))
-            else:
-                log.log('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
-                      (chDimsOK, chValsOK, tsM.times.size, len(tsM.stations), len(tsM.variables),
-                       str(tsM.vals.shape), ' '.join(tsM.units)) +
-                      ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
-                      ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g file=%s' % 
-                      (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
-                       np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals), chFNmIn))
-        return ifDimsOK and chValsOK == 'vals_OK'
-            
+        return verify(self, chFNmIn, log)
+    
+    #==========================================================================
+
+    def timestep(self):
+        #
+        # Convenience encapsulation of the timestep of the tsM
+        #
+        if len(self.times) < 2: return None
+        else: return self.times[1] - self.times[0]
+
+###############################################################################
+    
+def verify(tsM_, chFNmIn, log):
+    #
+    # Verifies the given tsMatrix, either tsM or taking it from the file. 
+    # Does not generate errors, only reports the content of the matrix, and returns 
+    # the number of nan-s
+    # The report is written to the log file if it is provided. Printed otherwise
+    #
+    if chFNmIn is None:
+        tsM = tsM_
+    else:
+        tsM = TsMatrix.fromNC(chFNmIn)
+
+    nNan = np.sum(np.isnan(tsM.vals))
+    nFinite = np.sum(np.isfinite(tsM.vals))
+    vMin = np.nanmin(tsM.vals)
+    vMean = np.nanmean(tsM.vals)
+    vMax = np.nanmax(tsM.vals)
+    vMed = np.nanmedian(tsM.vals)
+    if nFinite == tsM.vals.size and np.all(np.isfinite([vMin,vMean,vMax,vMed])): 
+        chValsOK = 'vals_OK'
+    else: chValsOK = '###>>_suspicious_vals'
+    if len(tsM.variables) == 1:
+        ifDimsOK = (len(tsM.times) == tsM.vals.shape[0] and 
+                    len(tsM.stations) == tsM.vals.shape[1] and
+                    len(tsM.vals.shape) == 2)
+    else:  
+        ifDimsOK = (len(tsM.times) == tsM.vals.shape[1] and 
+                    len(tsM.stations) == tsM.vals.shape[2] and
+                    len(tsM.variables) == tsM.vals.shape[0] and
+                    len(tsM.vals.shape) == 3)
+    if ifDimsOK: chDimsOK = 'dims_OK'
+    else: chDimsOK = '###>>_problematic_dimensions'
+    if log is None:
+        print('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+              (chDimsOK, chValsOK, len(tsM.times), len(tsM.stations), len(tsM.variables),
+               str(tsM.vals.shape), ' '.join(tsM.units)) +
+              ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
+              ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g' % 
+              (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
+               np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals)))
+    else:
+        log.log('tsMatrix %s %s: nTimes=%g nStations=%g nVars=%g vals_dims=%s units=%s' % 
+              (chDimsOK, chValsOK, len(tsM.times), len(tsM.stations), len(tsM.variables),
+               str(tsM.vals.shape), ' '.join(tsM.units)) +
+              ' fill_value=%g timezone=%s' % (tsM.fill_value, tsM.timezone) +
+              ' n_NaN=%g n_finite=%g n_bad_rest=%g min=%g mean=%g max=%g median=%g file=%s' % 
+              (nNan, nFinite, tsM.vals.size - nFinite - nNan, 
+               np.nanmin(tsM.vals), np.nanmean(tsM.vals), np.nanmax(tsM.vals), np.nanmedian(tsM.vals), chFNmIn))
+    return ifDimsOK and chValsOK == 'vals_OK'
         
-        
+    
+    

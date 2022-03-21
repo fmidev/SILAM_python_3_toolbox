@@ -48,9 +48,9 @@ one_hour = dt.timedelta(hours=1)
 one_minute = dt.timedelta(minutes=1)
 zero_interval = dt.timedelta(hours=0)
 
-radians_2_degrees =  57.29577951
-degrees_2_radians =  0.01745329252
-
+radians_2_degrees =  180./np.pi
+degrees_2_radians =  np.pi/180.
+lat2km = 111.    # latitude degree to km.
 
 ################################################################# 
 

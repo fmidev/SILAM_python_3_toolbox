@@ -20,7 +20,7 @@ from zipfile import ZipFile
 from sklearn import linear_model
 import sklearn
 from scipy import optimize
-from toolbox import supplementary as spp , MyTimeVars
+from toolbox import supplementary as spp, MyTimeVars
 from matplotlib import pyplot as plt
 
 minimum_regularization_alpha = 1e-5
@@ -65,6 +65,8 @@ def split_times(times, sample_weights, training_fraction,  # [0..1]
         elif nUsefulTimes == 2:
             log.log('SPLITTING WARNING. Only two useful times in sample_weights')
             train_indices = [np.argmax(sample_weights)]
+            # Test is the leftover
+            test_indices = sorted(list(set(range(nTimes)) - set(train_indices)))
             ifSelectionDone = True
         else:
             # In case of sufficient selection possibilities, proceed usual way
@@ -828,17 +830,12 @@ class Param_refine_MonteCarlo():
  
     def __init__(self, object_to_fit, 
                  rndA, rndB, cost_function, check_params, tsObserved, training_fraction, 
-                 subset_selection, sample_weights, ifVerbose, chLabel, randomGen, log):
+                 subset_selection, sample_weights, ifVerbose, chLabel, randomGen, chOutDir, log):
         self.iStep = 0                        # iteration
         self.log = log                        # log file
-        self.outDir = os.path.split(self.log.get_fname())[0]
-        try: 
-            os.makedirs(os.path.join(self.outDir,'cost'))
-            os.makedirs(os.path.join(self.outDir,'params'))
-        except: pass
+        self.outDir = chOutDir  #os.path.split(self.log.get_fname())[0]
         self.object_to_fit = object_to_fit
-        self.best_params = self.object_to_fit.get_params()    # parameters vector to fit
-        self.param_names = self.object_to_fit.get_param_names()    # their names
+        self.best_params, self.param_names = self.object_to_fit.get_params()    # parameters vector to fit
         self.rndA = rndA                      # additive part for random step
         self.rndB = rndB                      # multiplier for random walk
         self.cost_function = cost_function  # function that computes the cost
@@ -847,11 +844,12 @@ class Param_refine_MonteCarlo():
         self.sample_weights = sample_weights
         self.randomGen = randomGen
         self.train_indices, self.test_indices = split_times(self.tsObservations.times,
-                                                            self.sample_weights, 
-                                                            training_fraction, 
-                                                            subset_selection, self.randomGen, self.log)
+                                                            self.sample_weights, training_fraction, 
+                                                            subset_selection, self.randomGen,self.log)
         self.ifVerbose = ifVerbose
         self.chLabel = chLabel
+        spp.ensure_directory_MPI(os.path.join(self.outDir,'cost'))
+        spp.ensure_directory_MPI(os.path.join(self.outDir,'params'))
 
 
     #--------------------------------------------------------------------------
@@ -883,13 +881,21 @@ class Param_refine_MonteCarlo():
                                                    self.rndB,
                                                    self.best_params - self.rndA - self.best_params *
                                                    self.rndB)
-                ifCorrect = self.check_params({self.object_to_fit.get_name() : newParams})
+#                ifCorrect = self.check_params({self.object_to_fit.get_name() : newParams})
+                ifCorrect = self.check_params(newParams, self.param_names, False)
                 if ifCorrect: break
+                if np.mod(cnt,10) == 5:
+                    self.log.log('Difficult next set of parameters, cnt=%g' % cnt)
+                    self.check_params(newParams, self.param_names, ifVerbose=True)
+                    self.log.log('Continue for now')
             if not ifCorrect: 
                 self.log.log('Failed next set of parameters. Iterations stopped')
-                return None
+                self.check_params(newParams, self.param_names, ifVerbose=True)
+                self.log.log('Returning what can be returned')
+                input('?')
+                return (self.best_params, cost_init, cost)
             # Set the new parameters
-            self.object_to_fit.set_params(newParams)
+            self.object_to_fit.set_params(newParams, self.param_names)
             
             # New cost
             costNew = self.cost_function(self.object_to_fit, newParams, 
@@ -963,19 +969,25 @@ class Param_refine_MonteCarlo():
             #
             if nVoidIter > 50: break
         #
-        # If iterCrit has been found prior to stopping the iterations, use it instead ofthe last best one
+        # Did we have any single improvement?
         #
-        print('iterCrit < iter', iterCrit, iter)
-        if iterCrit < iter:
-            self.best_params, cost = dicParamsBestIter[iterCrit]
-            self.object_to_fit.set_params(self.best_params)
-            self.log.log('L-curve stop: %g' % iterCrit)
-            # Draw the final status
-            self.draw_progress(iter, arIterCost, x_test, costTest, par_vals, colors, mSize, iterCrit, 200)
+        if iterCrit is None:
+            self.log.log('PROBLEM: not a single accepted iteration. Something must be wrong')
         else:
-            # the last iteration is taken forwards
-            self.draw_progress(iter, arIterCost, x_test, costTest, par_vals, colors, mSize, 
-                               sorted(list(dicParamsBestIter.keys()))[-1], 200)
+            #
+            # If iterCrit has been found prior to stopping the iterations, use it instead of the last best one
+            #
+            print('iterCrit < iter', iterCrit, iter)
+            if iterCrit < iter:
+                self.best_params, cost = dicParamsBestIter[iterCrit]
+                self.object_to_fit.set_params(self.best_params, self.param_names)
+                self.log.log('L-curve stop: %g' % iterCrit)
+                # Draw the final status
+                self.draw_progress(iter, arIterCost, x_test, costTest, par_vals, colors, mSize, iterCrit, 200)
+            else:
+                # the last iteration is taken forwards
+                self.draw_progress(iter, arIterCost, x_test, costTest, par_vals, colors, mSize, 
+                                   sorted(list(dicParamsBestIter.keys()))[-1], 200)
 
         return (self.best_params, cost_init, cost)
 
@@ -1782,7 +1794,7 @@ class mapping_models:
         #     timesPredictors  # (nTimes) also times to forecast
         #     valPoolPredict,  # (nTimes, nStations, nPredictors) or list((nTimes, nStations))
         #     predictors       # names of predictors
-        #     rulesPred          # rules of preprocessing: what, how, where to...
+        #     rulesPred        # rules of preprocessing: what, how, where to...
         # Output is the object of processed_data
         #    ID
         #    fcst_predictorsTr                        # the whole set of predictors, full coverage

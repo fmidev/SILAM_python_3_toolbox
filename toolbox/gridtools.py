@@ -7,6 +7,23 @@ deg2rad = np.pi / 180.
 geo_proj = projections.LatLon()  # just to define the standard geographical projection
 
 
+def xyzFromLonLat(lons,lats):
+    #geographic degrees to 3D cartesian in km, assuming sperical earth
+    x = R_earth * np.cos(lats * deg2rad) * np.cos(lons * deg2rad)
+    y = R_earth * np.cos(lats * deg2rad) * np.sin(lons * deg2rad)
+    z = R_earth * np.sin(lats * deg2rad)
+    return x,y,z
+
+def lonlatFromXYZ(x,y,z):
+    lons = np.arctan2(y, x) / deg2rad
+    lats = np.arctan2(z, np.sqrt(x**2 + y**2))/deg2rad
+    return lons,lats
+
+def phithetaFromXYZ(x,y,z):
+    phi = np.arctan2(y, x) 
+    theta = np.arctan2(z, np.sqrt(x**2 + y**2))
+    return phi, theta
+
 
 def gc_distance(x1,x2,y1,y2, r=6378.0):
     xr1 = x1*np.pi/180
@@ -136,7 +153,7 @@ class Grid:
         X = (x-self.x0) / self.dx
         # for the case of global map, check +- one revolution
         X = np.where(X<-0.5, X+360./self.dx, X)
-        X = np.where(X>self.nx-0.5, X-360./self.dx, X)
+        X = np.where(X>=self.nx-0.5, X-360./self.dx, X)
         Y = (y-self.y0) / self.dy
         return X, Y
 

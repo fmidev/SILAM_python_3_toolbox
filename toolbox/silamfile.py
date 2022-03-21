@@ -627,8 +627,13 @@ class SilamNCFile(BaseSilamfile):
             lon[lon < -180] += 360
             if not np.all(util.almost_eq(lon[1:]-lon[:-1], delta, 1e-4)):
                 print('Strange file: cannot get continuous longitude')
-                print(lon)
-                raise ValueError
+                idxMax = np.argmax(np.abs(lon[1:]-lon[:-1]))
+                print(lon[max(0,idxMax-10):min(len(lon),idxMax+10)], '\n Uniformity 1e-4:',
+                      util.almost_eq(lon[1:]-lon[:-1], delta, 1e-4)[max(0,idxMax-10):min(len(lon),idxMax+10)])
+                if not np.all(util.almost_eq(lon[1:]-lon[:-1], delta, 1e-2)):
+                    print('REALLY strange file: cannot get continuous longitude even roughly')
+                    print(lon, '\n Uniformity 1e-2:', util.almost_eq(lon[1:]-lon[:-1], delta, 1e-2))
+                    raise ValueError
         # Try to recover the accuracy
         dx, dy = (lon[-1]-lon[0])/(nx-1), (lat[-1]-lat[0])/(ny-1)
         dx = 1e-5*round(dx*1e5)
@@ -691,12 +696,23 @@ class SilamNCFile(BaseSilamfile):
     def get_reader(self, expression, ind_level=None, mask_mode='first'):
 #        print('################### ordinary reader for a change')
         projected = True # Projected reader used always. 
-        if self.descr is not None:
+#        if self.descr is not None:
+#            reader = self.reader_class(self.descr, expression, ind_level, mask_mode=mask_mode)
+#        elif ncreader.NCExpression.is_expression(expression):
+#            reader = self.reader_class_expr(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)
+#        else:
+#            reader = self.reader_class(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)
+        #
+        # The name of nc variable can contain - or whatever. No reason to reply on this
+        # Just check if the name is recognizable
+        #
+        try:
             reader = self.reader_class(self.descr, expression, ind_level, mask_mode=mask_mode)
-        elif ncreader.NCExpression.is_expression(expression):
-            reader = self.reader_class_expr(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)
-        else:
-            reader = self.reader_class(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)
+        except:
+            try:
+                reader = self.reader_class(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)
+            except:
+                reader = self.reader_class_expr(self.netcdf_path, expression, ind_level, mask_mode=mask_mode)                
         if projected:
             return ProjectedReader(reader, self.grid)
         else:

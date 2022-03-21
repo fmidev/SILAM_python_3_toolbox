@@ -32,8 +32,9 @@ The following classes are available:
 """
 
 grads_templates = ['%y4', '%y2', '%m2', '%m1', '%h2', '%h1', '%d2', '%d1']
-grads_template_length = {'%y4' : 4, '%y2' : 2, '%m2' : 2, '%m1' : 1, '%h2' : 2, '%h1' : 1, '%d2' : 2, '%d1' : 1}
-
+gt_length = {}
+for gt in grads_templates: gt_length[gt] = int(gt[-1])#  '%y4' : 4, '%y2' : 2, '%m2' : 2, '%m1' : 1, '%h2' : 2, '%h1' : 1, '%d2' : 2, '%d1' : 1}
+gt_datetime_position = {'%y4' : 0, '%y2' : 0, '%m2' : 1, '%m1' : 1, '%d2' : 2, '%d1' : 2, '%h2' : 3, '%h1' : 3}
 
 class GenericWrapper(object):
     def __init__(self, wrapped, my_methods):
@@ -782,7 +783,7 @@ def all_files_for_template(tIn):
         ifFound = False
         for t in grads_templates:
             if templTmp.find(t) > 0:
-                templTmp = templTmp.replace(t,'%s' % (''.join(['?']*grads_template_length[t])))
+                templTmp = templTmp.replace(t,'%s' % (''.join(['?']*gt_length[t])))
                 ifFound = True
         if ifFound == False:
             print('Unknown GrADS template in the file name: ',templTmp)
@@ -806,7 +807,7 @@ def get_active_templates(templIn):
         delta = 0
         for t2 in active_templates:
             if t[1] > t2[1]: 
-                delta += grads_template_length[t2[0]] - len(t2[0])
+                delta += gt_length[t2[0]] - len(t2[0])
         t[1] += delta
     return active_templates
 
@@ -814,6 +815,7 @@ def files_and_times_4_template(templIn):
     # get all files satisfying the template for any time
     # Get files satisfying the template and tempalte elements in the templIn
     start_end_time_pieces = [[],[]]  # start and end of the interval
+    start_end_datetime_position = [[],[]]  # position in the datetime constructor call
     start_end_time = []
     for s_e_idx in [0,-1]:
         active_templates = get_active_templates(templIn)
@@ -829,33 +831,27 @@ def files_and_times_4_template(templIn):
 #            print(lstFiles[0], t, tIdx, grads_template_length[t])
             timePieces = []
             for fnm in lstFiles:
-                fTmp = fnm[tIdx:tIdx + grads_template_length[t]]
-                timePieces.append(fnm[tIdx:tIdx + grads_template_length[t]])
+                fTmp = fnm[tIdx:tIdx + gt_length[t]]
+                timePieces.append(fnm[tIdx:tIdx + gt_length[t]])
             timePieces = sorted(timePieces)
 #            timePieces = sorted(list( (int(fnm[tIdx:tIdx + grads_template_length[t]]) 
 #                                       for fnm in lstFiles) ))
             start_end_time_pieces[s_e_idx].append(timePieces[s_e_idx])
+            start_end_datetime_position[s_e_idx].append(gt_datetime_position[t])
             FNmSearch = FNmSearch.replace(t,str(start_end_time_pieces[s_e_idx][-1]))
             lstFiles = all_files_for_template(FNmSearch)
             active_templates = get_active_templates(FNmSearch)
         if len(lstFiles) != 1:
             print('All templates have been used up but single file is not found:', lstFiles)
             raise ValueError
-        # Now need to create datetime object with who-knows-how-many-items-defined
-        d0 = int(start_end_time_pieces[s_e_idx][0])
-        d1 = 1
-        d2 = 1
-        d3 = 0
-        d4 = 0
-        if len(start_end_time_pieces[s_e_idx]) > 1:
-            d1 = int(start_end_time_pieces[s_e_idx][1])
-            if len(start_end_time_pieces[s_e_idx]) > 2:
-                d2 = int(start_end_time_pieces[s_e_idx][2])
-                if len(start_end_time_pieces[s_e_idx]) > 3:
-                    d3 = int(start_end_time_pieces[s_e_idx][3])
-                    if len(start_end_time_pieces[s_e_idx]) > 4:
-                        d4 = int(start_end_time_pieces[s_e_idx][4])
-        start_end_time.append(dt.datetime(d0,d1,d2,d3,d4))
+        # Upto 5 values can be meaningfully given to datetime
+        d = np.ones(shape=(5), dtype=np.int32)  # defaults are zeroes
+        d[0] = 2000 # any year
+        d[3:] = 0  # default hours and minutes are zeroes
+        for d_idx in range(len(start_end_time_pieces[s_e_idx])):
+            d[start_end_datetime_position[s_e_idx][d_idx]] = start_end_time_pieces[s_e_idx][d_idx]
+        # Having identified all values in the template, store the time
+        start_end_time.append(dt.datetime(d[0],d[1],d[2],d[3],d[4]))
             
     return (all_files_for_template(templIn),                  # all files addressed by the template
             expandGradsTemplate(templIn, start_end_time[0]),  # first-time file

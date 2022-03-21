@@ -160,8 +160,9 @@ class Timeseries:
         self._dict = {}
         self.const_duration = None
 
-        # Some savings can be had when the duration is constant - check it. BUT this is
+        # Some savings can be made when the duration is constant - check it. BUT this is
         # currently only implemented for some functions for collocating two timeseries.
+        
         if isinstance(durations, str):
             self._duration = _stringToTimedelta(durations)
             _duration = _stringToTimedelta(durations)
@@ -1099,7 +1100,7 @@ def fromGridded(stations, reader, t1=None, t2=None, verbose=False, remove_if_out
         for i in range(nstations):
             d2d[i].append(field_filled[crd[i]])
 
-    return [Timeseries(d2d[i][:], times, reader.dt(), stations[i], quantity=reader.var_name, validator=check_missing)
+    return [Timeseries(d2d[i][:], times, reader.dt(), stations[i], quantity=reader.var_name(), validator=check_missing)
             for i in range(nstations)]
 
 
@@ -1474,7 +1475,9 @@ def readStations(file, columns=None, separator=None, have_full=False):
             if len(dat) >= 4:
                 area = dat[ind_area] if ind_area is not None else ''
                 source = dat[ind_source] if ind_source is not None else ''
-                alt = float(dat[ind_alt]) if ind_alt is not None else 0.0
+                #alt = float(dat[ind_alt]) if ind_alt is not None else 0.0
+                ### JP : ... to handle None as string
+                alt = 0.0 if 'None' in dat[ind_alt] else float(dat[ind_alt])
                 station = Station(dat[ind_code], dat[ind_name], 
                                   dat[ind_lon], dat[ind_lat], alt, area, source)
                 stations[dat[ind_code]] = station

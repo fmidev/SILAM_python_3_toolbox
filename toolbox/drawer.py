@@ -103,7 +103,7 @@ def bar_plot(ax, data, data_stdev=None, colors=None, total_width=0.8, single_wid
 
     if not group_names is None:
         ax.set_xticks(range(len(group_names)))
-        ax.set_xticklabels(group_names, fontsize=10, rotation=10)
+        ax.set_xticklabels(group_names, fontsize=10, rotation=90)
 
     return (bars, data.keys())
 
@@ -122,7 +122,7 @@ def multicolor_label(ax, list_of_strings, list_of_colors, axis='x', anchorpad=0,
     if axis=='x' or axis=='both':
         boxes = [TextArea(text, textprops=dict(color=color, ha='left',va='bottom',**kw)) 
                     for text,color in zip(list_of_strings,list_of_colors) ]
-        xbox = HPacker(children=boxes,align="center",pad=0, sep=5)
+        xbox = HPacker(children=boxes,align="center",pad=0, sep=0)  #5)
         anchored_xbox = AnchoredOffsetbox(loc=3, child=xbox, pad=anchorpad,frameon=False,bbox_to_anchor=(0.2, -0.09),
                                           bbox_transform=ax.transAxes, borderpad=0.)
         ax.add_artist(anchored_xbox)
@@ -131,7 +131,7 @@ def multicolor_label(ax, list_of_strings, list_of_colors, axis='x', anchorpad=0,
     if axis=='y' or axis=='both':
         boxes = [TextArea(text, textprops=dict(color=color, ha='left',va='bottom',rotation=90,**kw)) 
                      for text,color in zip(list_of_strings[::-1],list_of_colors[::-1]) ]
-        ybox = VPacker(children=boxes,align="center", pad=0, sep=5)
+        ybox = VPacker(children=boxes,align="center", pad=0, sep=0) #5)
         anchored_ybox = AnchoredOffsetbox(loc=3, child=ybox, pad=anchorpad, frameon=False, bbox_to_anchor=(-0.10, 0.2), 
                                           bbox_transform=ax.transAxes, borderpad=0.)
         ax.add_artist(anchored_ybox)
@@ -141,39 +141,67 @@ def multicolor_label(ax, list_of_strings, list_of_colors, axis='x', anchorpad=0,
 
 def draw_map_with_points(arTitles_, lonsStat, latsStat, grid, outDir, chFNmOut, 
                          vals_points=None, vals_map=None, chUnit='', 
-                         numrange=(np.nan,np.nan), ifNegatives=False, zipOut=None):
+                         numrange=(np.nan,np.nan), ifNegatives=False, zipOut=None, cmap='jet'):
     #
     # Draws a map with points in a common color palette.
     # Can draw a multipanel picture. The 0-th dimension of vals_map then gives the pictures
     #
-    ifMultiMap = len(vals_map.shape) == 3
+    if vals_map is None: ifMultiMap = False
+    else: ifMultiMap = len(vals_map.shape) == 3
+    # Get the proportion of the map
+    latScale = np.maximum(np.minimum(np.cos(spp.degrees_2_radians * 
+                                            (grid.y0 + grid.ny * grid.dy / 2)), 1), 0.3)
+    # when ready to rectangular grid
+#    fig_X_vs_Y = grid.nx * latScale / grid.ny
+    # or square grid of cylindrical projection
+    fig_X_vs_Y = 1
+    # How many maps?
     if ifMultiMap:
         if len(arTitles_) != vals_map.shape[0]:
             print('list of titles has different size then values 0-th dimension:',
                   len(arTitles_), vals_map.shape)
             raise ValueError
         arTitles = arTitles_
+        nxAx = np.ceil(np.sqrt(len(arTitles))).astype(np.int)
+        nyAx = np.ceil(len(arTitles) / nxAx).astype(np.int)
+        # Tupla of figure size
+        B = np.sqrt(40. / (fig_X_vs_Y * grid.nx * grid.ny))
+        figSz = (B * grid.nx * fig_X_vs_Y * nxAx, B * grid.ny * nyAx)
     else:
         # Old calls of this sub can have arTitles as a string - for drawing a single map
         if isinstance(arTitles_, list) or isinstance(arTitles_,np.ndarray): arTitles = arTitles_
         else: arTitles = [arTitles_]
+        nxAx = 1
+        nyAx = 1
+        # Tupla of figure size
+        B = np.sqrt(100. / (fig_X_vs_Y * grid.nx * grid.ny))
+        figSz = (B * grid.nx * fig_X_vs_Y, B * grid.ny)
             
     # Crete th geographical objects
-    bmap = Basemap(projection='cyl', resolution='l', 
+    bmap = Basemap(projection='cyl', resolution='i', 
                    llcrnrlon = grid.x0, 
                    urcrnrlat = max(grid.y0 + (grid.ny-1) * grid.dy,grid.y0),
                    urcrnrlon = grid.x0 + (grid.nx-1) * grid.dx, 
                    llcrnrlat = min(grid.y0 + (grid.ny-1) * grid.dy,grid.y0))
     # identify the min and max values
-    min_, max_ = numrange
-    
+    if numrange: min_, max_ = numrange
+    else: min_, max_ = (np.nan, np.nan)
+    minlog = min_
+    if min_ is None: min_= np.nan
+    if max_ is None: max_= np.nan
+
     if np.isnan(min_): 
         if not vals_map is None: 
             min_= np.nanmin(vals_map)
-            minlog = np.nanmin(vals_map[vals_map > 0])
+            if np.any(vals_map > 0):
+                minlog = np.nanmin(vals_map[vals_map > 0])
+            else: minlog = 0
         if not vals_points is None: 
-            min_= min(min_, np.nanmin(vals_points))
-            minlog = min(minlog, np.nanmin(vals_map[vals_map > 0]))
+            if np.isfinite(min_): min_= min(min_, np.nanmin(vals_points))
+            else: min_= np.nanmin(vals_points)
+            if np.any(vals_map > 0):
+                minlog = min(minlog, np.nanmin(vals_points[vals_points > 0]))
+            else: minlog = 0
     if np.isnan(max_): 
         if not vals_map is None: max_ = np.percentile(vals_map[np.isfinite(vals_map)], 99)  # max_= np.nanmax(vals_map)
         if not vals_points is None: max_ = np.percentile(vals_points[np.isfinite(vals_points)], 99)  # max_= np.nanmax(vals_map)
@@ -188,28 +216,24 @@ def draw_map_with_points(arTitles_, lonsStat, latsStat, grid, outDir, chFNmOut,
     steplog = (np.log(maxlog) - np.log(minlog)) / 10.
     print('min_, max_,minlog, maxlog, step, steplog', min_, max_,minlog, maxlog, step, steplog)
     if step == 0.0: return 
-    mpl.rc('image', cmap='jet')
-    plt.rcParams['image.cmap'] = 'jet'
+    mpl.rc('image', cmap=cmap)
+    plt.rcParams['image.cmap'] = cmap
     levsLog = np.exp(np.arange(np.log(minlog), np.log(maxlog), steplog))
     #
     # Plot in linear and logarithmic scales
     #
     for scale, norm, clevs in [('_lin', plt.Normalize(min_, max_), np.arange(min_, max_, step)),
                                ('_log', mpl.colors.LogNorm(minlog, maxlog, clip=False), levsLog)]:
-        cmap = mpl.cm.jet
+        cmap = cmap
         #
         # Make individual plots: each model plus obs
         #
         # create figure and axes instances, if needed
         #
         if ifMultiMap:
-            nxAx = np.ceil(np.sqrt(len(arTitles))).astype(np.int)
-            nyAx = np.ceil(len(arTitles) / nxAx).astype(np.int)
-            fig, axes = mpl.pyplot.subplots(nxAx, nyAx, figsize=(6.5 * nxAx, 6. * nyAx))
+            fig, axes = mpl.pyplot.subplots(nxAx, nyAx, figsize=figSz)  #(6.5 * nxAx, 6. * nyAx))
         else:
-            nxAx = 1
-            nyAx = 1
-            fig, ax = mpl.pyplot.subplots(1,1, figsize=(11, 8.5))
+            fig, ax = mpl.pyplot.subplots(1,1, figsize=figSz)   #(11, 8.5))
             axes = [ax]
         for iPanel in range(len(arTitles)):
             ax = np.array(axes).ravel()[iPanel]
@@ -239,7 +263,7 @@ def draw_map_with_points(arTitles_, lonsStat, latsStat, grid, outDir, chFNmOut,
                     # The scatter now
                     xStat,yStat = bmap(lonsStat, latsStat)
                     scat = bmap.scatter(xStat,yStat, c=vals_points[iPanel,:], s=50, linewidth=0.75,
-                                        edgecolor='black', norm=norm, cmap='jet') #vmin=0, vmax=10000)
+                                        edgecolor='black', norm=norm, cmap=cmap) #vmin=0, vmax=10000)
                     cbar = mpl.pyplot.colorbar(scat,ax=ax, orientation="horizontal", pad=0.05)
             else:
                 if not vals_map is None:
@@ -253,7 +277,7 @@ def draw_map_with_points(arTitles_, lonsStat, latsStat, grid, outDir, chFNmOut,
                     # The scatter now
                     xStat,yStat = bmap(lonsStat, latsStat)
                     scat = bmap.scatter(xStat,yStat, c=vals_points, s=50, linewidth=0.75, edgecolor='black', 
-                                        norm=norm, cmap='jet') #vmin=0, vmax=10000)
+                                        norm=norm, cmap=cmap) #vmin=0, vmax=10000)
                     cbar = mpl.pyplot.colorbar(scat,ax=ax, orientation="horizontal", pad=0.05)
 
             cbar.set_label(chUnit)
@@ -266,7 +290,8 @@ def draw_map_with_points(arTitles_, lonsStat, latsStat, grid, outDir, chFNmOut,
     #    print 'Coarse picture **************************************************'
         print(os.path.join(outDir, os.path.split(chFNmOut)[-1] + scale + '.png'))
         if zipOut is None:
-            plt.savefig(os.path.join(outDir, os.path.split(chFNmOut)[-1] + scale + '.png'), dpi=300) #, bbox_inches='tight')
+            plt.savefig(os.path.join(outDir, os.path.split(chFNmOut)[-1] + scale + '.png'), 
+                        dpi=300) #, bbox_inches='tight')
         else:
             streamOut = io.BytesIO()
             plt.savefig(streamOut, dpi=300)
@@ -669,7 +694,7 @@ def draw_tser_FRP_prediction_tsM(arTSM_, arNames, outDir, arTitle, metadata, tSt
 #====================================================================================
 
 def draw_tser_two_tsMatrices(arTSM_, arNames, outDir, outFNm_templ, 
-                             tStart=None, tEnd=None, ifNormalise=True):
+                             tStart=None, tEnd=None, ifNormalise=True, ifSameRank=False):
     #
     # Draws time series for all locations of tsMatrices, which must be identical
     # The matrices can be already in memory or in files
@@ -702,51 +727,72 @@ def draw_tser_two_tsMatrices(arTSM_, arNames, outDir, outFNm_templ,
         itEnd = np.searchsorted(arTSM[0].times, tEnd)
     else:
         itEnd = len(arTSM[0].times)
+    if itStart >= itEnd:
+        raise ValueError('Start and end indices conflict:' + 
+                         str(itStart) + ',' + str(itEnd))
     times = times[itStart:itEnd]
+    colors = ['r','b','g','y','m','gold','firebrick']
+    
     # 
     # Drawing goes cell by cell
     #
     if not ifNormalise: fNorm = 1.0
     for icell in range(len(arTSM[0].stations)):
         arR = []
-        fig, ax0 = mpl.pyplot.subplots(1,1, figsize=(20,8))
-        ax1 = ax0.twinx()
+        fig, ax0 = mpl.pyplot.subplots(1,1, figsize=(10,5))
+        if nTSM > 1: ax1 = ax0.twinx()
+        else: ax1 = None
         for its in range(nTSM):
+            color=colors[its]
             if its == 0: 
-                chMarker = 'o'
-                ax = ax1
-                linewidth=0
-                color = 'r'
-                linestyle = ''
+                ax = ax0
+                if ifSameRank:     # if the first time series is of the same type as others
+                    chMarker = ''
+                    linewidth=2
+                    linestyle = '-'
+                else:
+                    chMarker = 'o'
+                    linewidth=0
+                    linestyle = ''
             else: 
                 chMarker = ''
-                ax = ax0
+                ax = ax1
                 linewidth = 2
-                color='b'
                 linestyle='-'
             if len(arTSM[its].variables) > 1:
                 for ivar in range(len(arTSM[its].variables)):
                     chTitle = '%s_%s' % (arTSM[its].variables[ivar], arTSM[its].stations[icell].code)
-                    if its>0: arR.append(spp.nanCorrCoef(arTSM[0].vals[tStart:tEnd, icell, ivar], 
-                                                         arTSM[its].vals[tStart:tEnd, icell, ivar]))
+                    if its>0: arR.append(spp.nanCorrCoef(arTSM[0].vals[itStart:itEnd, icell, ivar], 
+                                                         arTSM[its].vals[itStart:itEnd, icell, ivar]))
                     if ifNormalise: 
-                        fNorm = np.max(np.abs(arTSM[its].vals[tStart:tEnd, icell, ivar]))
+                        fNorm = np.max(np.abs(arTSM[its].vals[itStart:itEnd, icell, ivar]))
                         if fNorm == 0: fNorm = 1 
-                    ax.plot_date(times, arTSM[its].vals[tStart:tEnd, icell, ivar] / fNorm, 
+                    ax.plot_date(times, arTSM[its].vals[itStart:itEnd, icell, ivar] / fNorm, 
                                  label=arNames[its], linestyle='-', marker=chMarker)
             else:
                 chTitle = '%s_%s' % (arTSM[its].variables[0], arTSM[its].stations[icell].code) 
-                if its>0: arR.append(spp.nanCorrCoef(arTSM[0].vals[tStart:tEnd, icell], 
-                                                     arTSM[its].vals[tStart:tEnd, icell]))
+                if its>0: arR.append(spp.nanCorrCoef(arTSM[0].vals[itStart:itEnd, icell], 
+                                                     arTSM[its].vals[itStart:itEnd, icell]))
                 if ifNormalise: 
-                    fNorm = np.nanmax(np.abs(arTSM[its].vals[tStart:tEnd, icell]))
+                    fNorm = np.nanmax(np.abs(arTSM[its].vals[itStart:itEnd, icell]))
                     if fNorm == 0: fNorm = 1
-                ax.plot_date(times, arTSM[its].vals[tStart:tEnd, icell] / fNorm, color=color,
-                             label=arNames[its], linestyle=linestyle, linewidth=linewidth, marker=chMarker)
-        ax.legend(fontsize=10, loc=1)
-        ax.set_title('%s, correlations to %s: %s' % (chTitle, arTSM[0].variables[0], 
-                                                     '  '.join(list(('%4.3f' % r for r in arR)))))
-        plt.savefig(os.path.join(outDir,outFNm_templ + '_' + chTitle + '.png'))
+                ax.plot_date(times, arTSM[its].vals[itStart:itEnd, icell] / fNorm, color=color,
+                             label=arNames[its], linestyle=linestyle, linewidth=linewidth,
+                             marker=chMarker)
+        if nTSM == 1: ax0.legend(fontsize=10) #, loc=1)
+        else:
+            lines0, labels0 = ax0.get_legend_handles_labels()
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            ax0.legend(lines0 + lines1, labels0 + labels1, fontsize=10)
+        ax0.set_ylabel(arNames[0], color='r')
+        if nTSM == 1:
+            ax0.set_title(chTitle, fontsize=14)
+        else:
+            ax1.set_ylabel(' '.join(labels1), color=colors[1])
+#            multicolor_label(ax1, arNames[1:], colors[1:len(arNames)], axis='y')
+            ax0.set_title('%s, correl to %s: %s' % (chTitle, arTSM[0].variables[0], 
+                                                          '  '.join(list(('%4.3f' % r for r in arR)))))
+        plt.savefig(os.path.join(outDir,outFNm_templ + '_' + chTitle + '.png'), dpi=300)
         plt.clf()
         plt.close()
 

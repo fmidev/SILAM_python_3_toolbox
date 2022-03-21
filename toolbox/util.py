@@ -67,10 +67,12 @@ def points_to_edges(pt):
     pt = np.asarray(pt)
     delta = pt[1]-pt[0]
     if not np.all(almost_eq(pt[1:]-pt[:-1], delta, 1e-4)):
-        print('########## Midpoints not equidistant. Delta=', delta)
-        print(pt)
-        print(pt[1:]-pt[:-1])
-        raise ValueError('Midpoints not equidistant')
+        print('########## Midpoints not equidistant, 1e-4. Delta=', delta)
+        idxMax = np.argmax(np.abs(pt[1:]-pt[:-1]))
+        print(pt[max(0,idxMax-10):min(len(pt),idxMax+10)])
+        print((pt[1:]-pt[:-1])[max(0,idxMax-10):min(len(pt),idxMax+10)])
+        if not np.all(almost_eq(pt[1:]-pt[:-1], delta, 1e-2)):
+            raise ValueError('Midpoints REALLY not equidistant, 1e-2')
     return np.arange(pt[0]-delta/2, pt[-1]+delta, delta)
 
 def get_chunk(array, ind_chunk, num_chunks):
@@ -122,3 +124,37 @@ def parse_workshare(string):
     return ind_chunk, num_chunks
 
 
+    #==========================================================================
+
+def trimPrecision(a, max_abs_err, max_rel_err):
+    #
+    #  Trims precision for better compressibility
+    #
+   assert (a.dtype == np.float32)
+  
+   if max_rel_err > 0:
+       keepbits = int(np.ceil(np.log2(1./min(1,max_rel_err)))) -1 #for rounding
+       trimPrecisionRel(a, keepbits)
+   
+   if max_abs_err > 0:
+       log2quantum = int(np.floor(np.log2(max_abs_err))+1.)
+       trimPrecisionAbs(a, log2quantum)
+
+
+def trimPrecisionRel(a, keepbits:int):
+    assert (a.dtype == np.float32)
+    b = a.view(dtype=np.int32)
+    maskbits = 23 - keepbits
+    mask = (0xFFFFFFFF>>maskbits)<<maskbits
+    half_quantum1 = ( 1<<(maskbits-1) ) - 1
+    b += ((b>>maskbits) & 1) + half_quantum1
+    b &= mask
+
+def trimPrecisionAbs(a, log2quantum:int): 
+
+    assert (a.dtype == np.float32)
+    quantum = 2.**(log2quantum)
+
+    a_maxtrimmed = quantum * 2**24 ## Avoid overflow
+    idx = (np.abs(a) < a_maxtrimmed)
+    a[idx] = quantum * np.around(a[idx] / quantum)

@@ -10,7 +10,7 @@ class SunTimeException(Exception):
         super(SunTimeException, self).__init__(message)
 
 
-class Sun:
+class Sun: 
     """
     Approximated calculation of sunrise and sunset datetimes. Adapted from:
     https://stackoverflow.com/questions/19615350/calculate-sunrise-and-sunset-times-for-a-given-gps-coordinate-within-postgresql

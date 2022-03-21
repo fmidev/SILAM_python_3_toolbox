@@ -16,7 +16,7 @@ etc.
 import numpy as np, datetime as dt, re, warnings
 
 from toolbox import gradsfile, util
-from support import pupynere as netcdf
+#from support import pupynere as netcdf
 from support import netcdftime
 
 from os import path
@@ -150,7 +150,7 @@ class NCDescriptor(gradsfile.GradsDescriptor):
 
 _dim_map = {'lon':'x', 'x':'x', 'lat':'y', 'y':'y', 'height':'z', 'z':'z',
            'time':'time', 'longitude' : 'x', 'latitude' : 'y', '2d_vert' : 'z', 'hybrid' : 'z',
-           'lev' : 'z', 'level':'z', 'rlat':'y', 'rlon':'x',}
+           'lev' : 'z', 'level':'z', 'rlat':'y', 'rlon':'x','raster':'raster'}
 
         
 class NCReader(gradsfile.GriddedDataReader, object):
@@ -244,8 +244,11 @@ class NCReader(gradsfile.GriddedDataReader, object):
         except:
             self.ifTimeDim = False
             # time is not a dimension of the variable. Fake a single-time dimension
-            time_var = self.nc_file.variables['time']
-            self._times = netcdftime.num2date([time_var[0]], time_var.units, calendar=calendar)
+            if "time" in self.nc_file.variables:
+                time_var = self.nc_file.variables['time']
+                self._times = netcdftime.num2date([time_var[0]], time_var.units, calendar=calendar)
+            else:
+                self._times = [dt.datetime(2000,1,1)]
 #            self._ind_time_dim = len(ncdims)
 
         one_second=dt.timedelta(seconds=1)
@@ -490,7 +493,45 @@ class NCReader(gradsfile.GriddedDataReader, object):
 
         if self.mask_mode == False: return values
         else: return np.ma.MaskedArray(values, mask)
-        
+
+
+    def read_x_fastest(self, n_steps=1):
+        if self._at_eof:
+            raise gradsfile.EndOfFileException()
+        if self.ifTimeDim:
+            if self.have_const_timestep:
+                ind_time = self._get_time_ind_const()
+            else:
+                ind_time = self._get_time_ind_var()
+            self._set_time_slice(ind_time, ind_time + n_steps)
+        else:
+            ind_time = 0  # if no time dimension for the var, never leave the slot 0
+        #
+        # No copying at all if dimensions are correct:
+        # t - z - y - x 
+        #
+        vert_before_horiz = (not self.have_vertical
+                            or self._ind_z_dim < self._ind_y_dim and self._ind_z_dim < self._ind_x_dim)
+        y_before_x = self._ind_y_dim < self._ind_x_dim
+        #
+        # at_eof true if last step read
+        self._at_eof = ind_time + n_steps >= len(self._times)
+        if not self._at_eof:
+            self.seek(n_steps)
+        else:
+            self._time = self._last_time
+        #
+        # In the simplest case, just return the slice
+        # Otherwise, might need to do something
+        #
+        if y_before_y and vert_vefore_horiz:
+            return self.ncvar[self._slice]
+        elif not y_before_x and not vert_before_horiz:
+            return self.ncvar[self._slice].copy().T
+        else:
+            raise ValueError('Strange order of dimensions in the file')
+
+
     def seek(self, n):
         # Seeks n-th time moment from the current time
         if self._at_eof:
@@ -558,6 +599,9 @@ class NCReader(gradsfile.GriddedDataReader, object):
     def dt(self):
         return self.timestep
 
+    def var_name(self): 
+        raise self.variable
+    
     def ndims(self):
         return 3 if self.have_vertical else 2
 
@@ -682,6 +726,9 @@ class NCExpression(gradsfile.GriddedDataReader):
     def rewind(self):
         for ncf in self.ncfiles:
             ncf.rewind()
+    def seek_abs(self, n):
+        for ncf in self.ncfiles:
+            ncf.seek_abs(n)
     def goto(self, time):
         for ncf in self.ncfiles:
             ncf.goto(time)
@@ -699,6 +746,8 @@ class NCExpression(gradsfile.GriddedDataReader):
         return self.ncfiles[0].t()
     def dt(self):
         return self.ncfiles[0].dt()
+    def var_name(self): 
+        return self.ncfiles[0].var_name()
     def ndims(self):
         return self.ncfiles[0].ndims()
     def nvars(self):
@@ -792,7 +841,10 @@ class NCDataset(gradsfile.GriddedDataReader):
             if self._ind_time + n_times - 1 > len(self.descr.timelist):
                 raise gradsfile.EndOfFileException()
             read_end_time = self.descr.timelist[self._ind_time + n_times - 1]
-            shape_full = (len(self._x), len(self._y), len(self._z), n_times, 1)
+            if len(self._z) > 1 and self.level is None:
+                shape_full = (len(self._x), len(self._y), len(self._z), n_times, 1)
+            else:
+                shape_full = (len(self._x), len(self._y), n_times, 1)
             values = np.empty(shape_full)
             for ind_time in range(n_times):
                 values[...,ind_time,0] = self._read_one_step().squeeze()           
@@ -853,6 +905,9 @@ class NCDataset(gradsfile.GriddedDataReader):
         try: return self.descr.timestep
         except: return None
 
+    def var_name(self): 
+        return self.variable
+    
     def ndims(self):
         return len(self._shape)
 

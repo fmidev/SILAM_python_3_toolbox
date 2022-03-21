@@ -117,7 +117,7 @@ subroutine make_str_fun_map(mdlFld, patch_zero, ifNormalize, str_fun, iFilterRad
             str_fun(ix,iy,ix,iy) = -1  ! will later turn to nan
           case(3)       ! limit the range, taken later after all time steps are done
           case default
-            print *,'patch_zero can be 0, 1, 2, not:', patch_zero
+            print *,'patch_zero can be 0, 1, 2, 3, not:', patch_zero
             return
         end select
       else
@@ -161,7 +161,7 @@ subroutine make_str_fun_map(mdlFld, patch_zero, ifNormalize, str_fun, iFilterRad
             str_fun(ix,iy,iFilterRad,iFilterRad) = -1  ! will later turn to nan
           case(3)       ! limit the range, taken later after all time steps are done
           case default
-            print *,'patch_zero can be 0, 1, 2, not:', patch_zero
+            print *,'patch_zero can be 0, 1, 2, 3, not:', patch_zero
             return
         end select  ! patch_zero
       endif  ! if iFilterRad given
@@ -252,7 +252,7 @@ subroutine make_str_fun_tsm(mdlFld, cells, patch_zero, ifNormalize, str_fun, &
           str_fun(iCell,ix,iy) = -1  ! will later turn to nan
         case(3)       ! limit the range, taken later after all time steps are done
         case default
-          print *,'patch_zero can be 0, 1, 2, not:', patch_zero
+          print *,'patch_zero can be 0, 1, 2, 3, not:', patch_zero
           return
       end select
     else
@@ -300,7 +300,7 @@ subroutine make_str_fun_tsm(mdlFld, cells, patch_zero, ifNormalize, str_fun, &
           str_fun(iCell,iFilterRad,iFilterRad) = -1  ! will later turn to nan
         case(3)       ! limit the range, taken later after all time steps are done
         case default
-          print *,'patch_zero can be 0, 1, 2, not:', patch_zero
+          print *,'patch_zero can be 0, 1, 2, 3, not:', patch_zero
           return
       end select
     endif   ! iFilterRad == 0
@@ -374,7 +374,10 @@ end subroutine average_subdomains
         print('>>>>>>> FORTRAN failed, have to use Python. It will be SLO-O-O-O-O-O-OW')
         ifFortranOK = False
 
-
+#
+# Conversion between string and integer for patch_zero switch
+#
+patch_zero_f = {'none': 0, 'smooth': 1, 'turn_to_nan' : 2, 'restrict_range' :3}
 
 ##############################################################################
 #
@@ -455,24 +458,22 @@ class structure_function():
                 continue
             #
             # Reduce the resolution by the gridSTF_factor: average the nxn squares 
-            print(1)
+            #
             mdl4stf = np.mean(np.mean(mdlFld[:nxSTF*self.gridSTF_factor,
                                              :nySTF*self.gridSTF_factor,
                                              0].reshape((self.gridSTF.nx, self.gridSTF_factor,
                                                          self.gridSTF.ny, self.gridSTF_factor)),
                               axis=3),axis=1)
             # add the variances
-            print(2)
             iCnt += 1
             if ifFortranOK:
-                print(3)
 
-                self.structFunMap += StF_F.make_str_fun_map(mdl4stf, patch_zero, ifNormalize, 
+                self.structFunMap += StF_F.make_str_fun_map(mdl4stf, patch_zero_f[patch_zero], 
+                                                            ifNormalize, 
                                                             self.filterRad, nxSTFd2, nySTFd2, 
                                                             self.gridSTF.nx, self.gridSTF.ny)
                 # handle negatives from FORTRAN: patch_zero may require nans
-                if patch_zero == 2: self.structFunMap[self.structFunMap < 0] = np.nan
-                print(4)
+                if patch_zero == 'turn_to_nan': self.structFunMap[self.structFunMap < 0] = np.nan
             else:
                 for ix in range(self.filterRad, self.gridSTF.nx-self.filterRad):
                     for iy in range(self.filterRad, self.gridSTF.ny-self.filterRad):
@@ -480,24 +481,21 @@ class structure_function():
                                                                  iy-self.filterRad : iy+self.filterRad] -
                                                          mdl4stf[ix,iy])^2
                 # handle the central points for the function: they are zeroes till here
-                if patch_zero == 0:     # leave
+                if patch_zero == 'none':     # leave
                     pass
-                elif patch_zero == 1:   # smoothen
+                elif patch_zero == 'smooth':   # smoothen
                     self.structFunMap[ix,iy,
                                       self.filterRad+1,
                                       self.filterRad+1] = np.median(self.structFunMap[ix,iy,
                                                                                       self.filterRad:self.filterRad+2, 
                                                                                       self.filterRad:self.filterRad+2])
-                elif patch_zero == 2:   # exclude
+                elif patch_zero == turn_to_nan:   # exclude
                     self.structFunMap[ix,iy, self.filterRad+1, self.filterRad+1] = np.nan
-                else:
-                    print('patch_zero must 0, 1, or 2')
-                    raise
         # turn to time average
         self.structFunMap /= iCnt
         #
         # Eliminate zeroes if needed
-        if patch_zero > 0: self.patch_zeroes_map(patch_zero)
+        if patch_zero != 'none': self.patch_zeroes_map(patch_zero)
 
 
     #==================================================================
@@ -590,12 +588,12 @@ class structure_function():
         # Turn to time average
         self.structFunTSM /= iCnt
         # If needed, get rid of zeroes
-        if patch_zero > 0: self.patch_zero_TSM(patch_zero)
+        if patch_zero != 'none': self.patch_zero_TSM(patch_zero)
 
 
     #=================================================================
     
-    def make_StF_4_subdomains_map(self, chMdlFNm, mdlVariable, arWinStart,
+    def make_StF_4_subdomains_map(self, chMdlFNm, mdlVariable, chUnitForce, arWinStart,
                                   patch_zero, ifNormalize):
         #
         # Makes structure function for a bunch of squeared subdomains, whcih can overlap.
@@ -607,7 +605,8 @@ class structure_function():
         self.mdlVariable = mdlVariable
         fIn = silamfile.SilamNCFile(chMdlFNm)   # input file
         rdr = fIn.get_reader(mdlVariable)       # reader for the variable
-        self.unit = '[(%s)^2]' % fIn._attrs[mdlVariable]['units']
+        if chUnitForce == '-': self.unit = '[(%s)^2]' % fIn._attrs[mdlVariable]['units']
+        else: self.unit = chUnitForce
         times = np.array(rdr.t())
         idx_tStart = np.searchsorted(times, self.tStart)
         if idx_tStart == 0 or idx_tStart== len(times):
@@ -667,7 +666,8 @@ class structure_function():
                 mdl4stf = StF_F.average_subdomains(mdlFld, arWinStart, arWinEnd, 
                                                    self.gridMdl.nx, self.gridMdl.ny, nxSTF, nySTF)
                 # The structure function itself
-                self.structFunMap += StF_F.make_str_fun_map(mdl4stf, patch_zero, ifNormalize, 
+                self.structFunMap += StF_F.make_str_fun_map(mdl4stf, patch_zero_f[patch_zero],
+                                                            ifNormalize, 
                                                             self.filterRad, nxSTFd2, nySTFd2,
                                                             self.gridSTF.nx, self.gridSTF.ny)
                 # handle negatives from FORTRAN: patch_zero may require nans
@@ -689,12 +689,12 @@ class structure_function():
         self.structFunMap /= iCnt
         #
         # Eliminate zeroes if needed
-        if patch_zero > 0: self.patch_zeroes_map(patch_zero)
+        if patch_zero != 'none': self.patch_zeroes_map(patch_zero)
 
 
     #=================================================================
     
-    def make_StF_4_subdomains_TSM(self, lstStations, chMdlFNm, mdlVariable, arWinStart, 
+    def make_StF_4_subdomains_TSM(self, lstStations, chMdlFNm, mdlVariable, chUnitForce, arWinStart, 
                                   patch_zero, ifNormalize):
         #
         # Makes structure function for a bunch of squeared subdomains, whcih can overlap.
@@ -706,7 +706,8 @@ class structure_function():
         self.mdlVariable = mdlVariable
         fIn = silamfile.SilamNCFile(chMdlFNm)   # input file
         rdr = fIn.get_reader(mdlVariable)       # reader for the variable
-        self.unit = '[(%s)^2]' % fIn._attrs[mdlVariable]['units']
+        if chUnitForce == '-': self.unit = '[(%s)^2]' % fIn._attrs[mdlVariable]['units']
+        else: self.unit = chUnitForce
         times = np.array(rdr.t())
         idx_tStart = np.searchsorted(times, self.tStart)
         if idx_tStart == 0 or idx_tStart== len(times):
@@ -777,7 +778,8 @@ class structure_function():
                 mdl4stf = StF_F.average_subdomains(mdlFld, arWinStart, arWinEnd, 
                                                    self.gridMdl.nx, self.gridMdl.ny, nxSTF, nySTF)
                 # The structure function itself
-                self.structFunTSM += StF_F.make_str_fun_tsm(mdl4stf, cells, patch_zero, ifNormalize, 
+                self.structFunTSM += StF_F.make_str_fun_tsm(mdl4stf, cells, patch_zero_f[patch_zero],
+                                                            ifNormalize, 
                                                             self.filterRad, nxSTFd2, nySTFd2,
                                                             self.gridSTF.nx, self.gridSTF.ny, 
                                                             cells.shape[1])
@@ -801,7 +803,7 @@ class structure_function():
         self.structFunTSM /= iCnt
         #
         # Eliminate zeroes if needed
-        if patch_zero > 0: self.patch_zeroes_TSM(patch_zero)
+        if patch_zero != 'none': self.patch_zeroes_TSM(patch_zero)
 
         
     #==================================================================
@@ -812,37 +814,47 @@ class structure_function():
         # That has to be removed if requested
         #
         if np.max(self.structFunMap) == 0:
-            if patch_zero > 0:
+            if patch_zero != 'none':
                 self.log.log('All-zero structure function')
-                raise ValueError
-        elif patch_zero == 1:
+                return False
+        elif patch_zero == 'from_neighbours':
             # zeroes are to be patched from neighbours
-            iCnt = 1
+            nZeroes = np.sum(self.structFunMap == 0)
             nx = self.structFunMap.shape[2]
             ny = self.structFunMap.shape[3]
             while np.min(self.structFunMap) == 0:
-                self.log.log('Removing %g zeroes in the structure function: ' % 
-                             np.sum(self.structFunMap == 0))
+                self.log.log('Removing %g zeroes in the structure function' % nZeroes)
                 idxZero = np.argwhere(self.structFunMap == 0)
                 for i0 in idxZero:
                     i,j,k,l = i0
                     self.structFunMap[i,j,k,l] = np.mean(self.structFunMap[i,j,
                                                                            max(0,k-1):min(k+1,nx),
                                                                            max(0,l-1):min(l+1,ny)])
-                iCnt += 1
-                if iCnt > 100:
+                # Any progress?
+                nZeroesNew = np.sum(self.structFunMap == 0)
+                if nZeroes == nZeroesNew:
                     self.log.log('Cannot eliminate zeroes from Struct Function ' + self.chTitle)
-                    raise ValueError
-        elif patch_zero == 2:
+                    raise ValueError('Cannot eliminate zeroes from Struct Function ' + self.chTitle)
+                else:
+                    nZeroes = nZeroesNew
+        elif patch_zero == 'turn_to_nan':
             # zeroes are to be turned to nan
             self.structFunMap[self.structFunMap == 0] = np.nan
-        elif patch_zero == 3:
+        elif patch_zero == 'restrict_range':
             # Limit the dynamic range of the function to 10000, i.e. square root range --> 100
             vMin = np.min(self.structFunMap[np.nonzero(self.structFunMap)])
             vMax = np.max(self.structFunMap)
-            vCorr = np.sqrt(max(1.0, vMax / vMin / 10000.))
+            if vMin < 1e-15:
+                self.log.log('Cannot limit dynamic range of Structure Function %s, min%g, max %g' %
+                             (self.chTitle, vMin, vMax))
+                vMin = 0.01 * vMax
+                vCorr = 1.0
+            else:
+                vCorr = max(1.0, 0.01 * np.sqrt(vMax) / np.sqrt(vMin))
             # Even for correction =1, still need to do it to get rid of zeroes
             self.structFunMap = np.minimum(np.maximum(self.structFunMap, vMin * vCorr), vMax / vCorr)
+        else:
+            raise ValueError('Unknown patch_zero switch:' + str(patch_zero))
                 
         
     #==================================================================
@@ -856,35 +868,45 @@ class structure_function():
             if patch_zero > 0:
                 self.log.log('All-zero structure function')
                 raise ValueError
-        elif patch_zero == 1:
+        elif patch_zero == 'from_neighbours':
             # zeroes are to be patched from neighbours
-            nx = self.structFunMap.shape[1]
-            ny = self.structFunMap.shape[2]
-            iCnt = 1
+            nx = self.structFunTSM.shape[1]
+            ny = self.structFunTSM.shape[2]
+            nZeroes = np.sum(self.structFunTSM == 0)
             while np.min(self.structFunTSM) == 0:
-                self.log.log('Removing %g zeroes in the structure function: ' % 
-                             np.sum(self.structFunMap == 0))
+                self.log.log('Removing %g zeroes in the structure function: ' % nZeroes)
                 idxZero = np.argwhere(self.structFunTSM == 0)
                 for i0 in idxZero:
                     i,k,l = i0
                     self.structFunTSM[i,k,l] = np.mean(self.structFunTSM[i,
                                                                          max(0,k-1):min(k+1,nx),
                                                                          max(0,l-1):min(l+1,ny)])
-                iCnt += 1
-                if iCnt > 100:
+                # Any progress?
+                nZeroesNew = np.sum(self.structFunTSM == 0)
+                if nZeroesNew == nZeroes:
                     self.log.log('Cannot eliminate zeroes from Struct Function ' + self.chTitle)
                     raise ValueError
-        elif patch_zero == 2:
+                else:
+                    nZeroes = nZeroesNew
+        elif patch_zero == 'turn_to_nan':
             # zeroes are to be turned to nan
             self.structFunTSM[self.structFunTSM == 0] = np.nan
-        elif patch_zero == 3:
+        elif patch_zero == 'restrict_range':
             # Limit the dynamic range of the function to 10000, i.e. square root range --> 100
             vMin = np.min(self.structFunTSM[np.nonzero(self.structFunTSM)])
             vMax = np.max(self.structFunTSM)
-            vCorr = np.sqrt(max(1.0, vMax / vMin / 10000.))
+            if vMin < 1e-15:
+                self.log.log('Cannot limit dynamic range of Structure Function %s, min%g, max %g' %
+                             (self.chTitle, vMin, vMax))
+                vMin = 0.01 * vMax
+                vCorr = 1.0
+            else:
+                vCorr = max(1.0, 0.01 * np.sqrt(vMax) / np.sqrt(vMin))
             if vCorr > 1.0:
                 self.structFunTSM = np.minimum(np.maximum(self.structFunTSM, vMin * vCorr),
                                                vMax / vCorr)
+        else:
+            raise ValueError('Unknown patch_zero switch:' + str(patch_zero))
 
 
     #==================================================================
